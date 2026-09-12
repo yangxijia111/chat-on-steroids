@@ -102,6 +102,8 @@ vi.mock('../src/main/env.js', () => ({
 vi.mock('../src/main/exec.js', () => ({
   findWindowsPowerShell: () => 'powershell.exe',
   terminateProcessTree: async (pid: number) => { fake.children.find((child) => child.pid === pid)?.close(); }
+  ,
+  scrubSecretEnv: (env: NodeJS.ProcessEnv) => env
 }));
 vi.mock('../src/main/logger.js', () => ({ logInfo: vi.fn(), logWarn: vi.fn() }));
 

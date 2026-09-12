@@ -62,6 +62,8 @@ vi.mock('node:child_process', () => ({ spawn: fixture.spawn }));
 vi.mock('../src/main/exec.js', () => ({
   childEnv: () => ({}),
   terminateProcessTree: fixture.terminate
+  ,
+  scrubSecretEnv: (env: NodeJS.ProcessEnv) => env
 }));
 vi.mock('../src/main/tunnel/locate.js', () => ({ locateBinary: () => 'tunnel-client-test' }));
 vi.mock('node:fs', async (importOriginal) => {
