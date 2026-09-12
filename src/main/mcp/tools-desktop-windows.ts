@@ -8,6 +8,8 @@ import { getConfig } from '../config.js';
 import { fail, type SurfaceRegistrar, type ToolContent, type ToolResult } from './kernel.js';
 import { WINDOWS_COMPUTER_READ_METHODS, WINDOWS_COMPUTER_STATE_INPUT_METHODS } from '../../shared/windows-computer.js';
 import { toolDeclaration } from './tool-declarations.js';
+import { checkDesktopTarget } from '../security/desktop-gate.js';
+import { recordSecurityAudit } from '../security/audit.js';
 
 const READ_METHODS = new Set<string>(WINDOWS_COMPUTER_READ_METHODS);
 const STATE_INPUT_METHODS = new Set<string>(WINDOWS_COMPUTER_STATE_INPUT_METHODS);
@@ -81,13 +83,72 @@ function desktopResult(method: string, value: unknown): ToolResult {
   return result;
 }
 
-async function refuseBrowserChord(key: string, window: { id: number }): Promise<string | null> {
+async function refuseBrowserChord(key: string, resolved: { process: string | null; title: string | null }): Promise<string | null> {
   const chord = browserTabChord(key.split('+').map(name => name.trim()));
   if (!chord) return null;
-  // Popup HWNDs may be absent from the ordinary top-level window list.
-  const target = (await getWindowState({ window: window.id, includeScreenshot: false, includeUi: false })).window;
-  if (!isBrowserProcess(target.process)) return null;
-  return `BROWSER_TAB_CHORD: ${chord} would manage tabs/windows or browser history in ${JSON.stringify(target.title)} (${target.process}). Use the page in its own browser window and native controls instead.`;
+  // Popup HWNDs may be absent from the ordinary top-level window list; a null process here
+  // means resolution failed and the native layer will refuse the press with its own error.
+  if (resolved.process === null || !isBrowserProcess(resolved.process)) return null;
+  return `BROWSER_TAB_CHORD: ${chord} would manage tabs/windows or browser history in ${JSON.stringify(resolved.title ?? '')} (${resolved.process}). Use the page in its own browser window and native controls instead.`;
+}
+
+/**
+ * 桌面目标防护闸（docs/THREAT-MODEL.md H1）：敏感应用硬拒绝 + 可选应用白名单。
+ * 在合成输入/截图/启动执行之前解析目标进程名并检查；解析失败时按原路径继续，
+ * 由 native 层的一致性校验给出自己的错误（能识别的目标一律强校验）。
+ *
+ * 返回已解析的进程名供后续检查（浏览器和弦）复用，避免二次窗口查询。
+ */
+async function resolveDesktopGate(
+  method: string,
+  input: unknown
+): Promise<{ refusal: string | null; process: string | null; title: string | null }> {
+  const allowlist = getConfig().security?.desktopAppAllowlist ?? [];
+  const auditDenied = (target: string | null, reason: string): void => {
+    const caller = currentCall();
+    recordSecurityAudit({
+      session: caller?.caller.sessionId ?? null,
+      agent: caller?.agent ?? null,
+      tool: method,
+      action: `desktop.${method}`,
+      target,
+      risk: 'high',
+      decision: 'denied-desktop-target',
+      reason
+    });
+  };
+
+  if (method === 'launch_app') {
+    const app = (input as { app?: string }).app ?? null;
+    const check = checkDesktopTarget('launch', app, allowlist);
+    if (!check.allowed) auditDenied(app ?? null, check.refusal ?? 'launch denied');
+    return { refusal: check.allowed ? null : check.refusal, process: null, title: null };
+  }
+
+  const capture = method === 'get_window_state';
+  const inputMethod = !READ_METHODS.has(method);
+  if (!capture && !inputMethod) return { refusal: null, process: null, title: null };
+  const window = (input as { window?: { id?: unknown } }).window;
+  const windowId = window && typeof window === 'object' && typeof (window as { id?: unknown }).id === 'number'
+    ? (window as { id: number }).id
+    : null;
+  if (windowId === null) return { refusal: null, process: null, title: null };
+  let process: string | null = null;
+  let title: string | null = null;
+  try {
+    const state = await getWindowState({ window: windowId, includeScreenshot: false, includeUi: false });
+    process = state.window?.process ?? null;
+    title = state.window?.title ?? null;
+  } catch {
+    // 目标解析失败：native 层会以 STALE_WINDOW 等错误拒绝，无需在此重复。
+    return { refusal: null, process: null, title: null };
+  }
+  const check = checkDesktopTarget(capture ? 'capture' : 'input', process, allowlist);
+  if (!check.allowed) {
+    auditDenied(process, check.refusal ?? 'target denied');
+    return { refusal: check.refusal, process, title };
+  }
+  return { refusal: null, process, title };
 }
 
 export function registerWindowsDesktopTools(reg: SurfaceRegistrar): void {
@@ -101,12 +162,14 @@ export function registerWindowsDesktopTools(reg: SurfaceRegistrar): void {
       annotations: { readOnlyHint: read, destructiveHint: !read, idempotentHint: read, openWorldHint: true }
     }), 'windows'), input => reg.guarded(capability, method, async () => {
       // The schema is checked by the same registrar for direct calls and code-mode children.
+      const gate = await resolveDesktopGate(method, input);
+      if (gate.refusal) return fail(gate.refusal);
       if (method === 'type_text' && 'text' in input && /[\r\n]/.test(String(input.text)) && !reg.caps.clipboardWrite) {
         return fail('TOOL_DISABLED: multiline text needs the existing Replace clipboard text permission. No input ran.');
       }
       if (method === 'press_key') {
         const keys = input as { key: string; window: { id: number } };
-        const refusal = await refuseBrowserChord(keys.key, keys.window);
+        const refusal = await refuseBrowserChord(keys.key, gate);
         if (refusal) return fail(refusal);
       }
       const api = apiForCaller(method);
