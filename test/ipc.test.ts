@@ -11,6 +11,8 @@ import path from 'node:path';
 
 type Handler = (event: unknown, payload: unknown) => Promise<unknown>;
 const handlers = new Map<string, Handler>();
+// sender 校验后 IPC 处理器要求 event.sender.id 与主窗口一致；测试以 id=7 模拟。
+const trustedEvent = { sender: { id: 7 } };
 
 vi.mock('electron', () => ({
   ipcMain: {
@@ -73,20 +75,20 @@ let currentWindow: {
   setBackgroundColor: ReturnType<typeof vi.fn>;
   setTitleBarOverlay: ReturnType<typeof vi.fn>;
   isDestroyed: () => boolean;
-  webContents: { send: ReturnType<typeof vi.fn> };
+  webContents: { send: ReturnType<typeof vi.fn>; id: number; isDestroyed: () => boolean };
 } | null = null;
 /** How many times the IPC layer asked the app to quit so a staged update can be applied. */
 let quitToInstallCalls = 0;
 
 const save = (patch: unknown, base: unknown = getConfig()): Promise<any> =>
-  handlers.get('settings:save')!(null, { patch, base }) as Promise<any>;
-const renameRoot = (payload: unknown): Promise<any> => handlers.get('roots:rename')!(null, payload) as Promise<any>;
-const removeRoot = (payload: unknown): Promise<any> => handlers.get('roots:remove')!(null, payload) as Promise<any>;
-const sessionEvents = (payload: unknown): Promise<any> => handlers.get('sessions:events')!(null, payload) as Promise<any>;
-const sessionList = (): Promise<any> => handlers.get('sessions:list')!(null, undefined) as Promise<any>;
+  handlers.get('settings:save')!(trustedEvent, { patch, base }) as Promise<any>;
+const renameRoot = (payload: unknown): Promise<any> => handlers.get('roots:rename')!(trustedEvent, payload) as Promise<any>;
+const removeRoot = (payload: unknown): Promise<any> => handlers.get('roots:remove')!(trustedEvent, payload) as Promise<any>;
+const sessionEvents = (payload: unknown): Promise<any> => handlers.get('sessions:events')!(trustedEvent, payload) as Promise<any>;
+const sessionList = (): Promise<any> => handlers.get('sessions:list')!(trustedEvent, undefined) as Promise<any>;
 
 it('validates dropped file count and stages arbitrary native file types', async () => {
-  const drop = (payload: unknown) => handlers.get('sessions:dropFiles')!(null, payload) as Promise<any>;
+  const drop = (payload: unknown) => handlers.get('sessions:dropFiles')!(trustedEvent, payload) as Promise<any>;
   expect(await drop({ files: [] })).toMatchObject({ ok: false });
   expect(await drop({ files: Array(21).fill('image.png') })).toMatchObject({ ok: false });
   expect(await drop({ files: [''] })).toMatchObject({ ok: false });
@@ -96,7 +98,7 @@ it('validates dropped file count and stages arbitrary native file types', async 
 it('publishes Goal draft progress through the session refresh channel without a new transcript event', async () => {
   const { startGoalDraft, resetGoalStateForTests } = await import('../src/main/goal.js');
   const session = await createSession({ title: 'Goal progress', conversationId: 'ipc-goal-progress' });
-  currentWindow = { setBackgroundColor: vi.fn(), setTitleBarOverlay: vi.fn(), isDestroyed: () => false, webContents: { send: vi.fn() } };
+  currentWindow = { setBackgroundColor: vi.fn(), setTitleBarOverlay: vi.fn(), isDestroyed: () => false, webContents: { send: vi.fn(), id: 7, isDestroyed: () => false } };
   try {
     startGoalDraft({ conversationId: session.conversationId!, sessionId: session.id, turnId: 'finished-turn', deferStart: true });
     expect(currentWindow.webContents.send).toHaveBeenCalledWith('session:changed');
@@ -106,7 +108,7 @@ it('publishes Goal draft progress through the session refresh channel without a 
 });
 
 it('stages clipboard image bytes with a preview through the general attachment owner', async () => {
-  const drop = (payload: unknown) => handlers.get('sessions:dropFiles')!(null, payload) as Promise<any>;
+  const drop = (payload: unknown) => handlers.get('sessions:dropFiles')!(trustedEvent, payload) as Promise<any>;
   expect(await drop({ files: [] })).toMatchObject({ ok: false });
   expect(await drop({ files: [{ name: 'huge.png', bytes: new Uint8Array(12 * 1024 * 1024 + 1) }] })).toMatchObject({ ok: false });
   const sharp = (await import('sharp')).default;
@@ -118,7 +120,7 @@ it('stages clipboard image bytes with a preview through the general attachment o
 });
 
 it('does not authorize the composer Generate Goal action from an absent or stale finish wait', async () => {
-  const generate = (payload: unknown) => handlers.get('sessions:generateFinishGoal')!(null, payload) as Promise<any>;
+  const generate = (payload: unknown) => handlers.get('sessions:generateFinishGoal')!(trustedEvent, payload) as Promise<any>;
   const session = await createSession({ title: 'No finish wait', conversationId: 'finish-action-ipc-chat' });
   expect(await generate({ id: session.id })).toMatchObject({ ok: false });
   expect(await generate({ id: session.id, expectedTurnId: 'old-turn' })).toMatchObject({ ok: false });
@@ -172,8 +174,8 @@ it('native opening cancellation aborts the exact IPC invocation and prevents a l
     return new Promise((_resolve, reject) => current!.addEventListener('abort', () => reject(new Error('provider aborted')), { once: true }));
   });
   try {
-    const opening = handlers.get('sessions:goalOpening')!(null, { text: 'Implement safely', mode: 'goal', requestId });
-    const cancelled = await handlers.get('tasks:cancel')!(null, { requestId }) as any;
+    const opening = handlers.get('sessions:goalOpening')!(trustedEvent, { text: 'Implement safely', mode: 'goal', requestId });
+    const cancelled = await handlers.get('tasks:cancel')!(trustedEvent, { requestId }) as any;
     expect(cancelled).toEqual({ ok: true, data: true });
     expect(signal?.aborted).toBe(true);
     expect(await opening).toMatchObject({ ok: false, error: 'task_cancelled' });
@@ -196,12 +198,12 @@ it('projects exact retained worker parents without adopting same-name unrelated 
 });
 
 it('adds picker-selected projects, reuses containing approval, and leaves cancellation unchanged', async () => {
-  currentWindow = { setBackgroundColor: vi.fn(), setTitleBarOverlay: vi.fn(), isDestroyed: () => false, webContents: { send: vi.fn() } };
+  currentWindow = { setBackgroundColor: vi.fn(), setTitleBarOverlay: vi.fn(), isDestroyed: () => false, webContents: { send: vi.fn(), id: 7, isDestroyed: () => false } };
   const folder = path.join(dir, 'picker-project');
   await fs.mkdir(path.join(folder, 'child'), { recursive: true });
   await saveConfig({ ...defaultConfig(), roots: [] });
   await writeDurableNow('projects', []);
-  const add = () => handlers.get('projects:add')!(null, {}) as Promise<any>;
+  const add = () => handlers.get('projects:add')!(trustedEvent, {}) as Promise<any>;
   expect((await add()).data).toBeNull();
   expect(getConfig().roots).toHaveLength(0);
   vi.mocked(dialog.showOpenDialog).mockResolvedValue({ canceled: false, filePaths: [folder] });
@@ -213,13 +215,13 @@ it('adds picker-selected projects, reuses containing approval, and leaves cancel
   vi.mocked(dialog.showOpenDialog).mockResolvedValue({ canceled: false, filePaths: [path.join(folder, 'child')] });
   expect((await add()).data.name).toBe('child');
   expect(getConfig().roots).toHaveLength(1);
-  const listed = await handlers.get('projects:list')!(null, {}) as any;
+  const listed = await handlers.get('projects:list')!(trustedEvent, {}) as any;
   expect(listed.data).toHaveLength(2);
-  const removed = await handlers.get('projects:remove')!(null, { id: first.data.id }) as any;
+  const removed = await handlers.get('projects:remove')!(trustedEvent, { id: first.data.id }) as any;
   expect(removed).toMatchObject({ ok: true, data: { id: first.data.id, ungrouped: true } });
   expect(getConfig().roots).toHaveLength(1);
   expect((await fs.stat(folder)).isDirectory()).toBe(true);
-  expect(await handlers.get('projects:remove')!(null, { id: folder })).toMatchObject({ ok: false });
+  expect(await handlers.get('projects:remove')!(trustedEvent, { id: folder })).toMatchObject({ ok: false });
 });
 
 /** The whole settings object the renderer sends, with the parts a test cares about set. */
@@ -321,7 +323,7 @@ describe('startup state without secure storage', () => {
     resetSecretsCacheForTests();
     vi.mocked(safeStorage.isAsyncEncryptionAvailable).mockResolvedValue(false);
 
-    const reply = (await handlers.get('state:get')!(null, undefined)) as any;
+    const reply = (await handlers.get('state:get')!(trustedEvent, undefined)) as any;
     expect(reply.ok).toBe(true);
     expect(reply.data.secureStorage.available).toBe(false);
     expect(reply.data.hasApiKey).toBe(false);
@@ -472,7 +474,7 @@ describe('turning multi-agent mode off', () => {
     expect(disabled.ok, disabled.error).toBe(true);
     expect((await readDurable<any>('ipc-swarm'))?.dormantRuns).toHaveLength(1);
 
-    const cleared = await handlers.get('swarm:reset')!(null, undefined) as any;
+    const cleared = await handlers.get('swarm:reset')!(trustedEvent, undefined) as any;
     expect(cleared.ok, cleared.error).toBe(true);
     expect(await readDurable('ipc-swarm')).toBeNull();
     expect(await readDurable<any>('ipc-retired-workers')).toMatchObject({
@@ -484,7 +486,7 @@ describe('turning multi-agent mode off', () => {
 describe('bounded IPC identities and OS launch results', () => {
   it('reports shell.openPath failure instead of claiming the extension folder opened', async () => {
     vi.mocked(shell.openPath).mockResolvedValueOnce('Access is denied');
-    const reply = (await handlers.get('bridge:openExtensionFolder')!(null, undefined)) as {
+    const reply = (await handlers.get('bridge:openExtensionFolder')!(trustedEvent, undefined)) as {
       ok: boolean;
       error?: string;
     };
@@ -494,7 +496,7 @@ describe('bounded IPC identities and OS launch results', () => {
 
   it('opens the extension recovery ZIP from the installed app version, never releases/latest', async () => {
     vi.mocked(app.getVersion).mockReturnValueOnce('1.8.8');
-    const reply = await handlers.get('bridge:downloadExtension')!(null, undefined);
+    const reply = await handlers.get('bridge:downloadExtension')!(trustedEvent, undefined);
 
     expect(reply).toEqual({ ok: true, data: true });
     expect(shell.openExternal).toHaveBeenCalledWith(extensionDownloadUrl('1.8.8'));
@@ -644,7 +646,7 @@ describe('settings writes from more than one UI', () => {
     currentWindow = {
       setBackgroundColor: vi.fn(), setTitleBarOverlay: vi.fn(),
       isDestroyed: () => false,
-      webContents: { send: vi.fn() }
+      webContents: { send: vi.fn(), id: 7, isDestroyed: () => false }
     };
     const original = defaultConfig();
     const base = {
@@ -712,7 +714,7 @@ describe('root namespace invariants', () => {
     await fs.mkdir(folder, { recursive: true });
     const file = path.join(dir, 'dropped-file.txt');
     await fs.writeFile(file, 'not a folder');
-    const addPath = (payload: unknown): Promise<any> => handlers.get('roots:addPath')!(null, payload) as Promise<any>;
+    const addPath = (payload: unknown): Promise<any> => handlers.get('roots:addPath')!(trustedEvent, payload) as Promise<any>;
 
     const added = await addPath({ path: folder });
     expect(added.ok).toBe(true);
@@ -783,7 +785,7 @@ describe('every link the window offers', () => {
     const offered = [...html.matchAll(/data-link="([^"]+)"/g)].map((match) => match[1]!);
     expect(offered.length, 'the markup offers no links at all — has data-link been renamed?').toBeGreaterThan(0);
 
-    for (const url of offered) expect(await handlers.get('link:open')!(null, { url })).toEqual({ ok: true, data: true });
+    for (const url of offered) expect(await handlers.get('link:open')!(trustedEvent, { url })).toEqual({ ok: true, data: true });
   });
 
   it('opens the OpenRouter key page the goal loop sends people to', async () => {
@@ -794,7 +796,7 @@ describe('every link the window offers', () => {
 
   it.each(['https://example.com/path?q=hello', 'http://localhost:3000/', 'mailto:person@example.com?subject=Hello'])(
     'opens an authored external link: %s', async url => {
-      expect(await handlers.get('link:open')!(null, { url })).toEqual({ ok: true, data: true });
+      expect(await handlers.get('link:open')!(trustedEvent, { url })).toEqual({ ok: true, data: true });
       expect(shell.openExternal).toHaveBeenLastCalledWith(url);
     }
   );
@@ -803,7 +805,7 @@ describe('every link the window offers', () => {
     'https:example.com', 'https://example.com/\nfoo', 'mailto:a@example.com?body=%0Ainjected', 'https://example.com/\\path'])(
     'refuses unsafe authored link: %s', async url => {
     const before = vi.mocked(shell.openExternal).mock.calls.length;
-    const refused = (await handlers.get('link:open')!(null, { url })) as { ok: boolean; error: string };
+    const refused = (await handlers.get('link:open')!(trustedEvent, { url })) as { ok: boolean; error: string };
     expect(refused.ok).toBe(false);
     expect(refused.error).toMatch(/not allowed/i);
     expect(vi.mocked(shell.openExternal).mock.calls.length).toBe(before);
@@ -811,7 +813,7 @@ describe('every link the window offers', () => {
 
   it('serializes non-Error throws into a real IPC error string', async () => {
     vi.mocked(shell.openExternal).mockRejectedValueOnce('Windows shell refused the request');
-    const reply = (await handlers.get('link:open')!(null, {
+    const reply = (await handlers.get('link:open')!(trustedEvent, {
       url: 'https://openrouter.ai/settings/keys'
     })) as { ok: boolean; error?: string };
     expect(reply).toEqual({ ok: false, error: 'Windows shell refused the request' });
@@ -828,7 +830,7 @@ describe('every link the window offers', () => {
 describe('installing a downloaded update on request', () => {
   it('refuses, and does not quit, when nothing has been downloaded', async () => {
     const before = quitToInstallCalls;
-    const reply = (await handlers.get('update:install')!(null, undefined)) as { ok: boolean; error: string };
+    const reply = (await handlers.get('update:install')!(trustedEvent, undefined)) as { ok: boolean; error: string };
     expect(reply.ok).toBe(false);
     expect(reply.error).toMatch(/no downloaded update/i);
     expect(quitToInstallCalls).toBe(before);
@@ -909,10 +911,10 @@ describe('the goal model id', () => {
 
 describe('the custom provider key slot', () => {
   const storeSecret = (payload: unknown): Promise<any> =>
-    handlers.get('secret:set')!(null, payload) as Promise<any>;
+    handlers.get('secret:set')!(trustedEvent, payload) as Promise<any>;
 
   it('stores a custom key in its own slot and refuses an unnamed one', async () => {
-    const prior = await handlers.get('state:get')!(null, undefined) as any;
+    const prior = await handlers.get('state:get')!(trustedEvent, undefined) as any;
     const stored = await storeSecret({ value: 'sk-custom-1', key: 'customProviderApiKey' });
     expect(stored.ok, stored.error).toBe(true);
     expect(stored.data.hasCustomProviderKey).toBe(true);
@@ -1031,12 +1033,12 @@ describe('session IPC contracts', () => {
     const conversationId = 'aaaaaaaa-1111-2222-3333-444444444444';
     const session = await createSession({ title: 'rogue chat', conversationId });
 
-    const blocked = (await handlers.get('sessions:block')!(null, { id: session.id, blocked: true })) as any;
+    const blocked = (await handlers.get('sessions:block')!(trustedEvent, { id: session.id, blocked: true })) as any;
     expect(blocked.ok, blocked.error).toBe(true);
     expect(blocked.data).toEqual([conversationId]);
     expect(isChatBlocked(conversationId)).toBe(true);
 
-    const released = (await handlers.get('sessions:block')!(null, { id: session.id, blocked: false })) as any;
+    const released = (await handlers.get('sessions:block')!(trustedEvent, { id: session.id, blocked: false })) as any;
     expect(released.ok, released.error).toBe(true);
     expect(released.data).toEqual([]);
     expect(isChatBlocked(conversationId)).toBe(false);
@@ -1044,7 +1046,7 @@ describe('session IPC contracts', () => {
     // The renderer names a session; it can neither name a conversation nor block a session
     // that has none — the same boundary `sessions:openChat` holds.
     const unattributed = await createSession({ title: 'no conversation', conversationId: null });
-    const refused = (await handlers.get('sessions:block')!(null, { id: unattributed.id, blocked: true })) as any;
+    const refused = (await handlers.get('sessions:block')!(trustedEvent, { id: unattributed.id, blocked: true })) as any;
     expect(refused.ok).toBe(false);
     expect(refused.error).toMatch(/no valid ChatGPT conversation/i);
     resetBlockedChatsForTests();
@@ -1055,10 +1057,10 @@ describe('session IPC contracts', () => {
     resetBlockedChatsForTests();
     const conversationId = 'bbbbbbbb-1111-2222-3333-444444444444';
     const session = await createSession({ title: 'blocked then deleted', conversationId });
-    await handlers.get('sessions:block')!(null, { id: session.id, blocked: true });
+    await handlers.get('sessions:block')!(trustedEvent, { id: session.id, blocked: true });
     expect(isChatBlocked(conversationId)).toBe(true);
 
-    const deleted = (await handlers.get('sessions:delete')!(null, { id: session.id })) as any;
+    const deleted = (await handlers.get('sessions:delete')!(trustedEvent, { id: session.id })) as any;
     expect(deleted.ok, deleted.error).toBe(true);
     // Otherwise the conversation stays refused with nothing left in the app to release it.
     expect(isChatBlocked(conversationId)).toBe(false);
@@ -1071,7 +1073,7 @@ describe('session IPC contracts', () => {
     const session = await createSession({ title: 'listed while blocked', conversationId });
 
     expect((await sessionList()).data.blocked).toEqual([]);
-    await handlers.get('sessions:block')!(null, { id: session.id, blocked: true });
+    await handlers.get('sessions:block')!(trustedEvent, { id: session.id, blocked: true });
     expect((await sessionList()).data.blocked).toEqual([conversationId]);
     resetBlockedChatsForTests();
   });
@@ -1081,14 +1083,14 @@ describe('session IPC contracts', () => {
       title: 'open me',
       conversationId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
     });
-    const reply = await handlers.get('sessions:openChat')!(null, { id: session.id }) as any;
+    const reply = await handlers.get('sessions:openChat')!(trustedEvent, { id: session.id }) as any;
     expect(reply.ok, reply.error).toBe(true);
     expect(openInPreferredBrowser).toHaveBeenCalledWith(
       'https://chatgpt.com/c/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
     );
 
     const unattributed = await createSession({ title: 'no conversation', conversationId: null });
-    const refused = await handlers.get('sessions:openChat')!(null, { id: unattributed.id }) as any;
+    const refused = await handlers.get('sessions:openChat')!(trustedEvent, { id: unattributed.id }) as any;
     expect(refused.ok).toBe(false);
     expect(refused.error).toMatch(/no valid ChatGPT conversation/i);
   });
@@ -1122,7 +1124,7 @@ describe('renderer pushes after the window is gone', () => {
 
 describe('Stop IPC exact session and turn authority', () => {
   it('requires an explicit current turn and cannot stop a replacement conversation', async () => {
-    const invoke = (payload: unknown) => handlers.get('sessions:stopTurn')!(null, payload) as Promise<any>;
+    const invoke = (payload: unknown) => handlers.get('sessions:stopTurn')!(trustedEvent, payload) as Promise<any>;
     const conversationId = 'f1111111-aaaa-4bbb-8ccc-111111111111';
     const session = await createSession({ title: 'Stop IPC', conversationId });
     await appendEvent(session.id, { time: Date.now(), source: 'app', kind: 'turn_start', turnId: 'ipc-stop-one' });

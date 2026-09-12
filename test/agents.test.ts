@@ -107,7 +107,10 @@ async function setEnabled(enabled: boolean, maxWorkers = 3, allowUnattributedCal
   const base = defaultConfig();
   await saveConfig({
     ...base,
-    multiAgent: { ...base.multiAgent, enabled, maxWorkers, allowUnattributedCalls }
+    multiAgent: { ...base.multiAgent, enabled, maxWorkers, allowUnattributedCalls },
+    // 本套件测试的是归因/生命周期运行时，不是命令分类或 worker 权限降级；
+    // 用 level 3 + inherit 恢复加固前行为，安全语义由 security-* 套件覆盖。
+    security: { ...base.security, shellLevel: 3, workerPermissions: 'inherit' }
   });
 }
 

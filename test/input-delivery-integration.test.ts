@@ -11,6 +11,7 @@ import { APP_VERSION, BRIDGE_PROTOCOL } from '../src/main/version.js';
 import * as browserWake from '../src/main/browser-wake.js';
 type Handler = (event: unknown, payload: unknown) => Promise<any>;
 const handlers = new Map<string, Handler>();
+const trustedEvent = { sender: { id: 7 } };
 vi.mock('electron', () => ({
   ipcMain: { handle: (name: string, handler: Handler) => handlers.set(name, handler), removeHandler: (name: string) => handlers.delete(name) },
   BrowserWindow: class {}, clipboard: {}, dialog: {}, shell: {}, nativeTheme: { themeSource: 'system' },
@@ -50,7 +51,7 @@ beforeAll(async () => {
   directory = await makeTempDir('clf-input-integration-');
   initConfigPath(directory); initSecretsPath(directory); initDurableStore(directory); initSessionStore(directory);
   await saveConfig(defaultConfig());
-  registerIpc(() => ({ isDestroyed: () => false, webContents: { send: pushed } }) as never, () => undefined);
+  registerIpc(() => ({ isDestroyed: () => false, webContents: { send: pushed, id: 7, isDestroyed: () => false } }) as never, () => undefined);
   await startBridge();
   const paired = await post('/pair', {});
   expect(paired.status).toBe(200);
@@ -430,13 +431,13 @@ it('freezes image injection from staged originals with replay, receipt, and brow
     { kind: 'turn_start', turnId: 'image-turn', time: Date.now() }
   ] });
   const authored = { ...message(session.id, 'off'), mode: 'auto' as const, attachments: [attachment], attachmentDelivery: 'tool' as const };
-  const result = await handlers.get('sessions:send')!(null, authored);
+  const result = await handlers.get('sessions:send')!(trustedEvent, authored);
   expect(result.ok).toBe(true);
   expect(result.data).toMatchObject({ attachments: [attachment], attachmentDelivery: 'tool', transportIntent: 'tool' });
   const dataUrl = result.data.toolImages[0].dataUrl;
   expect(await sharp(Buffer.from(dataUrl.split(',')[1], 'base64')).metadata()).toMatchObject({ width: 1600, height: 800 });
   input.resetInputForTests();
-  expect((await handlers.get('sessions:send')!(null, authored)).data.toolImages[0].dataUrl).toBe(dataUrl);
+  expect((await handlers.get('sessions:send')!(trustedEvent, authored)).data.toolImages[0].dataUrl).toBe(dataUrl);
   expect(await input.pendingBrowserInputs()).toEqual([]);
   expect(await input.claimBrowserInput(authored.id, 'page', conversationId)).toBeNull();
   expect((await input.offerToolInput(session.id, randomUUID(), 'wrong', 0)).messages).toEqual([]);
@@ -502,7 +503,7 @@ it('revokes a claimed send via IPC, fences pre-send authorization and records a 
   await input.enqueueInput(row as import('../src/main/session/input.js').InputArgs);
   expect((await post('/input/claim', { id: row.id, owner: 'page', conversationId: null })).body.input).toBeTruthy();
   expect((await post('/input/claim', { id: row.id, owner: 'page', conversationId: null, authorize: true })).body.ok).toBe(true);
-  expect((await handlers.get('sessions:cancelInput')!(null, { id: row.id })).ok).toBe(true);
+  expect((await handlers.get('sessions:cancelInput')!(trustedEvent, { id: row.id })).ok).toBe(true);
   expect((await post('/input/claim', { id: row.id, owner: 'page', conversationId: null, authorize: true })).body.ok).toBe(false);
   const conversationId = randomUUID();
   await createSession({ title: 'Late receipt', conversationId });
@@ -701,7 +702,7 @@ describe('IPC input delivery and Goal control integration', () => {
     const bytes = await sharp({ create: { width: 2, height: 2, channels: 3, background: '#123456' } }).webp({ lossless: true }).toBuffer();
     const dataUrl = `data:image/webp;base64,${bytes.toString('base64')}`;
     const authored = { ...message(session.id, 'off'), images: [{ name: 'example.webp', dataUrl }] };
-    expect((await handlers.get('sessions:send')!(null, authored)).ok).toBe(true);
+    expect((await handlers.get('sessions:send')!(trustedEvent, authored)).ok).toBe(true);
     expect((await readEvents(session.id)).filter(event => event.kind === 'user_message')).toHaveLength(0);
     if (transport === 'browser') {
       expect((await post('/input/claim', { id: authored.id, owner: 'exact-page', conversationId })).body.input).toBeDefined();
@@ -714,19 +715,19 @@ describe('IPC input delivery and Goal control integration', () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ inputId: authored.id, authoredText: authored.text, message: { text: authored.text } });
     const assetId = rows[0]!.kind === 'user_message' ? rows[0]!.assets![0]!.id : '';
-    expect((await handlers.get('sessions:image')!(null, { id: session.id, assetId })).data).toBe(dataUrl);
+    expect((await handlers.get('sessions:image')!(trustedEvent, { id: session.id, assetId })).data).toBe(dataUrl);
     expect((await input.listInputs()).find(row => row.id === authored.id)?.historyRecorded).toBe(true);
   });
   it('publishes only nonce-bound catalog observations through HTTP and pushes completion', async () => {
     const { pendingChatModelRequest, resetChatModelsForTests } = await import('../src/main/chat-models.js');
     resetChatModelsForTests();
-    expect((await handlers.get('chatModels:request')!(null, {})).data.state).toBe('pending');
+    expect((await handlers.get('chatModels:request')!(trustedEvent, {})).data.state).toBe('pending');
     const nonce = pendingChatModelRequest()!.nonce;
     const models = [{ id: 'gpt-observed', label: 'GPT Observed', efforts: ['none', 'medium', 'high', 'xhigh'] }];
     expect((await post('/models', { nonce: randomUUID(), models })).status).toBe(409);
     pushed.mockClear();
     expect((await post('/models', { nonce, models })).body.ok).toBe(true);
-    expect((await handlers.get('chatModels:get')!(null, {})).data.models).toEqual(models);
+    expect((await handlers.get('chatModels:get')!(trustedEvent, {})).data.models).toEqual(models);
     expect(pushed).toHaveBeenCalledWith('state:changed', expect.anything());
     expect((await post('/models', { nonce, models })).status).toBe(409);
   });
@@ -740,22 +741,22 @@ describe('IPC input delivery and Goal control integration', () => {
       events: [{ kind: 'turn_start', turnId: 'first-held-turn', time: Date.now() }] });
     expect(first.status).toBe(200);
     expect(first.body.sessionId).toBe(session.id);
-    const current = await handlers.get('sessions:controls')!(null, { id: session.id });
+    const current = await handlers.get('sessions:controls')!(trustedEvent, { id: session.id });
     expect(current.data).toMatchObject({ activeTurnId: 'first-held-turn', finishHeld: true });
-    expect((await handlers.get('sessions:releaseFinish')!(null, { id: session.id, expectedTurnId: 'stale-turn' })).ok).toBe(false);
-    const released = await handlers.get('sessions:releaseFinish')!(null, { id: session.id, expectedTurnId: 'first-held-turn' });
+    expect((await handlers.get('sessions:releaseFinish')!(trustedEvent, { id: session.id, expectedTurnId: 'stale-turn' })).ok).toBe(false);
+    const released = await handlers.get('sessions:releaseFinish')!(trustedEvent, { id: session.id, expectedTurnId: 'first-held-turn' });
     expect(released.data.finishHeld).toBe(false);
     const second = await post('/events', { conversationId,
       events: [{ kind: 'turn_start', turnId: 'second-held-turn', time: Date.now() + 1 }] });
     expect(second.status).toBe(200);
     expect(second.body.sessionId).toBe(session.id);
-    expect((await handlers.get('sessions:releaseFinish')!(null, { id: session.id, expectedTurnId: 'first-held-turn' })).ok).toBe(false);
-    expect((await handlers.get('sessions:controls')!(null, { id: session.id })).data.finishHeld).toBe(true);
+    expect((await handlers.get('sessions:releaseFinish')!(trustedEvent, { id: session.id, expectedTurnId: 'first-held-turn' })).ok).toBe(false);
+    expect((await handlers.get('sessions:controls')!(trustedEvent, { id: session.id })).data.finishHeld).toBe(true);
   });
   it('shares selected-chat objectives with the extension and projects objective-only Goal', async () => {
     const conversationId = randomUUID();
     const session = await createSession({ title: 'Objective control', conversationId });
-    const call = (name: string, extra = {}) => handlers.get(name)!(null, { id: session.id, ...extra });
+    const call = (name: string, extra = {}) => handlers.get(name)!(trustedEvent, { id: session.id, ...extra });
     await goal.setGoalObjectiveNow(conversationId, 'Legacy objective');
     expect(goal.goalSwitchFor(conversationId)).toMatchObject({ enabled: false, own: false });
     expect((await call('sessions:controls')).data).toMatchObject({ objective: 'Legacy objective', automation: 'goal' });
@@ -784,7 +785,7 @@ describe('IPC input delivery and Goal control integration', () => {
   it('controls exact durable sessions and withdraws Goal without sending new input', async () => {
     const id = randomUUID();
     const session = await createSession({ title: 'Controls', conversationId: id });
-    const call = (name: string, extra = {}) => handlers.get(name)!(null, { id: session.id, ...extra });
+    const call = (name: string, extra = {}) => handlers.get(name)!(trustedEvent, { id: session.id, ...extra });
     const before = (await input.listInputs()).length;
     expect((await call('sessions:automation', { automation: 'goal' })).data.automation).toBe('goal');
     expect((await call('sessions:automation', { automation: 'loop' })).data.automation).toBe('loop');
@@ -795,7 +796,7 @@ describe('IPC input delivery and Goal control integration', () => {
     expect((await call('sessions:automation', { automation: 'goal' })).data.conversationId).toBe(destination);
     expect(goal.goalSwitchFor(id).enabled).toBe(false);
     for (const channel of ['sessions:controls', 'sessions:automation', 'sessions:compact', 'sessions:cancelCompaction']) {
-      expect((await handlers.get(channel)!(null, { id: randomUUID(), automation: 'goal' })).ok).toBe(false);
+      expect((await handlers.get(channel)!(trustedEvent, { id: randomUUID(), automation: 'goal' })).ok).toBe(false);
     }
   });
   it('rejects a superseded current attachment before changing either control ledger', async () => {
@@ -804,7 +805,7 @@ describe('IPC input delivery and Goal control integration', () => {
     const proof = vi.spyOn(store, 'conversationWasSuperseded').mockResolvedValue(true);
     try {
       for (const channel of ['sessions:controls', 'sessions:automation', 'sessions:compact', 'sessions:cancelCompaction']) {
-        expect((await handlers.get(channel)!(null, { id: session.id, automation: 'goal' })).error).toBe('conversation_superseded');
+        expect((await handlers.get(channel)!(trustedEvent, { id: session.id, automation: 'goal' })).error).toBe('conversation_superseded');
       }
       expect(goal.goalSwitchFor(session.conversationId!).own).toBe(false);
     } finally { proof.mockRestore(); }
@@ -813,26 +814,26 @@ describe('IPC input delivery and Goal control integration', () => {
     const { setChatBlocked } = await import('../src/main/session/blocked-chats.js');
     const conversationId = randomUUID();
     const session = await createSession({ title: 'Compact controls', conversationId });
-    const first = await handlers.get('sessions:compact')!(null, { id: session.id });
+    const first = await handlers.get('sessions:compact')!(trustedEvent, { id: session.id });
     expect(first.ok).toBe(true);
     expect(first.data.job.token).toBeTruthy();
-    const repeated = await handlers.get('sessions:compact')!(null, { id: session.id });
+    const repeated = await handlers.get('sessions:compact')!(trustedEvent, { id: session.id });
     expect(repeated.data.job.token).toBe(first.data.job.token);
     setChatBlocked(conversationId, true);
-    expect((await handlers.get('sessions:compact')!(null, { id: session.id })).error).toBe('chat_blocked');
-    expect((await handlers.get('sessions:automation')!(null, { id: session.id, automation: 'goal' })).error).toBe('chat_blocked');
-    expect((await handlers.get('sessions:automation')!(null, { id: session.id, automation: 'off' })).ok).toBe(true);
-    expect((await handlers.get('sessions:cancelCompaction')!(null, { id: session.id })).ok).toBe(true);
+    expect((await handlers.get('sessions:compact')!(trustedEvent, { id: session.id })).error).toBe('chat_blocked');
+    expect((await handlers.get('sessions:automation')!(trustedEvent, { id: session.id, automation: 'goal' })).error).toBe('chat_blocked');
+    expect((await handlers.get('sessions:automation')!(trustedEvent, { id: session.id, automation: 'off' })).ok).toBe(true);
+    expect((await handlers.get('sessions:cancelCompaction')!(trustedEvent, { id: session.id })).ok).toBe(true);
     setChatBlocked(conversationId, false);
   });
   it('fences durable decision helpers from Goal and compaction after reload', async () => {
     const conversationId = randomUUID();
     const session = await createSession({ title: 'Decision controls', conversationId });
     await goal.registerGoalDecisionChat(conversationId);
-    expect((await handlers.get('sessions:controls')!(null, { id: session.id })).data.blocked).toBe('worker');
-    expect((await handlers.get('sessions:automation')!(null, { id: session.id, automation: 'loop' })).error).toBe('worker_goal_disabled');
-    expect((await handlers.get('sessions:compact')!(null, { id: session.id })).error).toBe('worker_compaction_disabled');
-    expect((await handlers.get('sessions:automation')!(null, { id: session.id, automation: 'off' })).ok).toBe(true);
+    expect((await handlers.get('sessions:controls')!(trustedEvent, { id: session.id })).data.blocked).toBe('worker');
+    expect((await handlers.get('sessions:automation')!(trustedEvent, { id: session.id, automation: 'loop' })).error).toBe('worker_goal_disabled');
+    expect((await handlers.get('sessions:compact')!(trustedEvent, { id: session.id })).error).toBe('worker_compaction_disabled');
+    expect((await handlers.get('sessions:automation')!(trustedEvent, { id: session.id, automation: 'off' })).ok).toBe(true);
   });
   it('prepares fresh offline Goal before global activation and preserves authored enqueue identity', async () => {
     await saveConfig({ ...defaultConfig(), goal: { ...defaultConfig().goal, enabled: false, backend: 'templates' } });
@@ -872,7 +873,7 @@ describe('IPC input delivery and Goal control integration', () => {
     await goal.setGoalSwitchNow(conversationId, 'goal', true);
     await goal.acceptGoalReplyNow({ conversationId, sessionId: session.id, replyId: 'old-final', turnId: 'old-turn', eventSeq: 1, blocked: false });
     const request = message(session.id, 'loop');
-    const enqueued = await handlers.get('sessions:send')!(null, request);
+    const enqueued = await handlers.get('sessions:send')!(trustedEvent, request);
     expect(enqueued.ok).toBe(true);
     expect(goal.goalSwitchFor(conversationId).mode).toBe('goal');
     expect((await input.offerToolInput(session.id, conversationId, 'tool-request', 0)).messages).toHaveLength(1);
@@ -884,7 +885,7 @@ describe('IPC input delivery and Goal control integration', () => {
   });
   it('binds a new chat through HTTP ACK, applies its choice once, and pushes session change', async () => {
     const request = message(null, 'goal');
-    await handlers.get('sessions:send')!(null, request);
+    await handlers.get('sessions:send')!(trustedEvent, request);
     const claim = await post('/input/claim', { id: request.id, owner: 'document-owner', conversationId: null });
     expect(claim.body.input.automation).toBe('goal');
     const conversationId = randomUUID();
@@ -905,7 +906,7 @@ describe('IPC input delivery and Goal control integration', () => {
   it('retains the opening objective when Off wins before ACK and never overwrites later edits on a mode change', async () => {
     const objective = 'Keep this opening objective while switched off';
     const request = { ...message(null, 'goal'), objective };
-    await handlers.get('sessions:send')!(null, request);
+    await handlers.get('sessions:send')!(trustedEvent, request);
     await post('/input/claim', { id: request.id, owner: 'off-before-ack', conversationId: null });
     expect(await input.setInputAutomation(request.id, 'off')).toBe(true);
     const conversationId = randomUUID();

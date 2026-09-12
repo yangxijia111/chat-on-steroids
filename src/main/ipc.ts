@@ -48,7 +48,7 @@ import { effectiveCapabilities, getConfig, updateConfig, MAX_MCP_INSTRUCTIONS_CH
 import { clearAllGoalSwitches, draftTaskPlan, listGoalModels, MODEL_PAGE_SIZE, retireGoalDrafts, goalBackendFor, goalSwitchFor, setGoalSwitchNow, setGoalReplyActiveNow, setGoalObjectiveNow } from './goal.js';
 import { forgetExposedSurface } from './mcp/server.js';
 import { runDiagnostics } from './diagnostics.js';
-import { formatLogAsJson, formatLogForClipboard, getLog, logInfo, onLog } from './logger.js';
+import { formatLogAsJson, formatLogForClipboard, getLog, logInfo, logWarn, onLog } from './logger.js';
 import { RESERVED_ROOT_NAMES, uniqueRootName, validateNewRoot, SandboxError, resolvePath } from './sandbox.js';
 import { addProject, listProjects, removeProject } from './projects.js';
 import { hasSecret, isEncryptionAvailable, secureStorageStatus, setSecret } from './secrets.js';
@@ -362,10 +362,24 @@ async function buildState(): Promise<AppState> {
   };
 }
 
+/**
+ * 解析当前可信渲染端（主窗口）的 webContents id；窗口不在时返回 null。
+ *
+ * IPC sender 校验（docs/THREAT-MODEL.md H3）：本应用只有一个窗口且只加载本地
+ * 文件，但「靠环境保证」不是校验。任何 frame（未来新增窗口、意外加载的远程
+ * 内容）都不应能调用这些高权限 channel——sender id 不匹配一律拒绝。
+ */
+let resolveTrustedSender: (() => number | null) | null = null;
+
 /** Wraps a handler so a thrown error becomes a message the UI can show. */
 function handle<T>(channel: string, fn: (payload: unknown) => Promise<T>): void {
-  ipcMain.handle(channel, async (_event, payload: unknown) => {
+  ipcMain.handle(channel, async (event, payload: unknown) => {
     try {
+      const trusted = resolveTrustedSender?.() ?? null;
+      if (trusted === null || event.sender.id !== trusted) {
+        logWarn(`ipc ${channel}: refused an untrusted sender`);
+        return { ok: false as const, error: 'Untrusted IPC sender' };
+      }
       return { ok: true as const, data: await fn(payload) };
     } catch (err) {
       const message =
@@ -382,6 +396,11 @@ function handle<T>(channel: string, fn: (payload: unknown) => Promise<T>): void 
 }
 
 export function registerIpc(getWindow: () => BrowserWindow | null, quitToInstall: () => void): void {
+  resolveTrustedSender = () => {
+    const window = getWindow();
+    const id = window?.webContents?.id;
+    return typeof id === 'number' && !window!.webContents.isDestroyed() ? id : null;
+  };
   registerPluginIpc(handle, getWindow);
   handle('usage:get', () => usageOverview());
   handle('state:get', async () => {
