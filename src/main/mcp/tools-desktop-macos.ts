@@ -90,36 +90,30 @@ async function browserChordRefusal(actions: Action[]): Promise<string | null> {
 
 /**
  * 桌面目标防护闸（docs/THREAT-MODEL.md H1，macOS 侧）：敏感应用硬拒绝 + 可选
- * 应用白名单。focus 目标按窗口解析；无 focus 的输入按当前前台窗口近似 ——
- * 坐标动作的精确帧归属仍由 native 层校验，这里挡的是明确的敏感目标。
+ * 应用白名单。覆盖显式 focus 目标与捕获目标 —— 这两类可以从窗口清单解析出
+ * 进程名而不产生任何输入副作用。
+ *
+ * 刻意不做「无 focus 输入 → 查前台」的推断：普通按键批次承诺不询问窗口
+ * （tools-desktop-runtime 的契约），而坐标/引用动作的精确帧归属由 helper 的
+ * assertInputTarget 在执行边界强校验。无显式目标的敏感应用防护在此平台是
+ * 已记录的剩余风险（docs/SECURITY-HARDENING.md）；Windows 平台为全量门控。
  */
 async function desktopTargetRefusal(actions: Action[], captureWindow: number | undefined): Promise<string | null> {
   const security = getConfig().security;
   const allowlist = security?.desktopAppAllowlist ?? [];
   const focusIds = new Set<number>();
   for (const action of actions) if (action.type === 'focus') focusIds.add(action.window);
-  const drivesInput = actions.some(
-    (action) => action.type !== 'wait' && action.type !== 'read_clipboard' && action.type !== 'write_clipboard' && action.type !== 'focus'
-  );
-  if (focusIds.size === 0 && !drivesInput && captureWindow === undefined) return null;
+  if (focusIds.size === 0 && captureWindow === undefined) return null;
 
-  if (focusIds.size > 0 || captureWindow !== undefined) {
-    const windows = (await listWindows().catch(() => ({ windows: [] as Array<{ id: number; process?: string }> }))).windows;
-    for (const id of focusIds) {
-      const target = windows.find((window) => window.id === id) ?? null;
-      const check = checkDesktopTarget('input', target?.process ?? null, allowlist);
-      if (!check.allowed) return check.refusal;
-    }
-    if (captureWindow !== undefined) {
-      const target = windows.find((window) => window.id === captureWindow) ?? null;
-      const check = checkDesktopTarget('capture', target?.process ?? null, allowlist);
-      if (!check.allowed) return check.refusal;
-    }
+  const windows = (await listWindows().catch(() => ({ windows: [] as Array<{ id: number; process?: string }> }))).windows;
+  for (const id of focusIds) {
+    const target = windows.find((window) => window.id === id) ?? null;
+    const check = checkDesktopTarget('input', target?.process ?? null, allowlist);
+    if (!check.allowed) return check.refusal;
   }
-  if (drivesInput && focusIds.size === 0) {
-    // activeWindow 在解析失败/无窗口时返回空体；解不出目标就放行给 native 层判定。
-    const front = (await activeWindow().catch(() => null))?.window ?? null;
-    const check = checkDesktopTarget('input', front?.process ?? null, allowlist);
+  if (captureWindow !== undefined) {
+    const target = windows.find((window) => window.id === captureWindow) ?? null;
+    const check = checkDesktopTarget('capture', target?.process ?? null, allowlist);
     if (!check.allowed) return check.refusal;
   }
   return null;
