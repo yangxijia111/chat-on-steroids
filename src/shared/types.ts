@@ -311,6 +311,37 @@ export interface McpSettings {
   instructions: string;
 }
 
+/**
+ * 安全加固设置（docs/THREAT-MODEL.md）。每一项都默认选择最小权限，
+ * 用户可在设置中显式放宽。
+ */
+export interface SecuritySettings {
+  /**
+   * Shell 分级（0-3）：
+   *   0 禁止 shell；1 仅低风险 allowlist；2 普通开发命令（默认）；
+   *   3 完全 shell（用户显式开启）。
+   */
+  shellLevel: 0 | 1 | 2 | 3;
+  /** 用户追加的 level 1 allowlist 命令前缀（如 Unreal/Unity 构建命令）。 */
+  shellAllowlist: string[];
+  /**
+   * worker 权限模式：restricted（默认）= worker 只读；
+   * inherit = worker 继承 prime 全部能力（加固前的行为）。
+   */
+  workerPermissions: 'restricted' | 'inherit';
+  /** 桌面控制应用白名单；空 = 不限制（敏感应用硬拒绝始终生效）。 */
+  desktopAppAllowlist: string[];
+  /** Goal/Loop 自动运行的安全预算。 */
+  loopBudget: {
+    enabled: boolean;
+    maxToolCallsPerRun: number;
+    maxExecPerRun: number;
+    maxRuntimeMinutes: number;
+  };
+  /** 是否写入安全审计日志（security/audit.jsonl）。 */
+  auditLog: boolean;
+}
+
 export interface ArtifactSettings {
   /** Per-file byte ceiling enforced before, during and after the download stream. */
   maxFileBytes: number;
@@ -328,6 +359,7 @@ export interface Config {
   multiAgent: MultiAgentSettings;
   goal: GoalSettings;
   mcp: McpSettings;
+  security: SecuritySettings;
 }
 
 export type ConnectionState =

@@ -10,6 +10,7 @@ import { connect, disconnect, getStatus, onStatusChange, shutdownConnection } fr
 import { registerIpc } from './ipc.js';
 import { getChatModels, restoreChatModels, startChatModelDiscovery } from './chat-models.js';
 import { flushLogBeforeExit, initLogFile, logError, logInfo, logWarn, snapshotLogOnCrash } from './logger.js';
+import { initAuditLog } from './security/audit.js';
 import { unifiedExecManager } from './codex/manager.js';
 import { initSecretsPath } from './secrets.js';
 import { pluginManager } from './plugins/manager.js';
@@ -302,6 +303,7 @@ void app.whenReady().then(async () => {
   initSecretsPath(userData);
   initSessionStore(userData);
   initDurableStore(userData);
+  initAuditLog(path.join(userData, 'security'));
   await restoreChatModels();
   if (windowActivation.isDisabled()) return;
   await loadConfig();

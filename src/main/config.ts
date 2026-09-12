@@ -26,6 +26,7 @@ import {
   type GoalSettings,
   type MultiAgentSettings,
   type Root,
+  type SecuritySettings,
   type SessionSettings
 } from '../shared/types.js';
 import {
@@ -125,6 +126,30 @@ const DEFAULT_COMPACTION: CompactionSettings = {
  */
 const DEFAULT_ARTIFACTS: ArtifactSettings = {
   maxFileBytes: 20 * 1024 * 1024
+};
+
+/**
+ * 安全加固默认值（docs/THREAT-MODEL.md）。全部按最小权限选择：
+ *
+ * - shellLevel 2：普通开发命令可用，系统级/凭据类命令拒绝并提示用户提级。
+ *   既保留 coding agent 的核心能力，又把 prompt injection 到全系统 RCE 的路径
+ *   （威胁模型 C1）砍断。
+ * - workerPermissions restricted：worker 默认只读（C3），用户显式放宽后才继承。
+ * - loopBudget：自动 Loop 有硬预算（C2），耗尽即停并等待用户。
+ * - auditLog：安全审计默认开启（H7），只记录脱敏后的决策摘要。
+ */
+const DEFAULT_SECURITY: SecuritySettings = {
+  shellLevel: 2,
+  shellAllowlist: [],
+  workerPermissions: 'restricted',
+  desktopAppAllowlist: [],
+  loopBudget: {
+    enabled: true,
+    maxToolCallsPerRun: 800,
+    maxExecPerRun: 200,
+    maxRuntimeMinutes: 240
+  },
+  auditLog: true
 };
 
 /**
@@ -451,7 +476,26 @@ const configSchema = z.object({
     })
     .optional()
     .default({ ...DEFAULT_MCP })
-    .catch({ ...DEFAULT_MCP })
+    .catch({ ...DEFAULT_MCP }),
+  security: z
+    .object({
+      shellLevel: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3)]).optional().default(DEFAULT_SECURITY.shellLevel),
+      shellAllowlist: z.array(z.string().min(1).max(200)).max(64).optional().default([]),
+      workerPermissions: z.enum(['restricted', 'inherit']).optional().default(DEFAULT_SECURITY.workerPermissions),
+      desktopAppAllowlist: z.array(z.string().min(1).max(260)).max(64).optional().default([]),
+      loopBudget: z
+        .object({
+          enabled: z.boolean().optional().default(DEFAULT_SECURITY.loopBudget.enabled),
+          maxToolCallsPerRun: z.number().int().min(10).max(100_000).optional().default(DEFAULT_SECURITY.loopBudget.maxToolCallsPerRun),
+          maxExecPerRun: z.number().int().min(1).max(10_000).optional().default(DEFAULT_SECURITY.loopBudget.maxExecPerRun),
+          maxRuntimeMinutes: z.number().int().min(1).max(10_080).optional().default(DEFAULT_SECURITY.loopBudget.maxRuntimeMinutes)
+        })
+        .optional()
+        .default({ ...DEFAULT_SECURITY.loopBudget }),
+      auditLog: z.boolean().optional().default(DEFAULT_SECURITY.auditLog)
+    })
+    .optional()
+    .default({ ...DEFAULT_SECURITY, shellAllowlist: [], desktopAppAllowlist: [] })
 });
 
 /**
@@ -479,7 +523,8 @@ export function defaultConfig(platform: NodeJS.Platform = process.platform, rele
     multiAgent: { ...FIRST_LAUNCH_MULTI_AGENT },
     artifacts: { ...DEFAULT_ARTIFACTS },
     goal: { ...DEFAULT_GOAL },
-    mcp: { ...DEFAULT_MCP }
+    mcp: { ...DEFAULT_MCP },
+    security: { ...DEFAULT_SECURITY, shellAllowlist: [], desktopAppAllowlist: [] }
   };
 }
 

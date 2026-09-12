@@ -88,6 +88,7 @@ import { anyContinuationOpen, compactingConversation } from '../session/continua
 import { acknowledgeBackgroundExecOutput, backgroundExecRecoveryNotices, offerBackgroundExecOutput } from '../codex/ownership.js';
 import { DEFAULT_MAX_OUTPUT_TOKENS } from '../codex/unified-exec-constants.js';
 import { unattributedRepairEta } from '../bridge.js';
+import { checkToolPolicy } from '../security/policy.js';
 import { conversationAttachment, readOverflowText } from '../session/store.js';
 import type { StoredText, ToolOutcome } from '../../shared/session.js';
 
@@ -683,6 +684,15 @@ async function dispatchTracked(
   }
   let handlerRan = false;
   markTiming('identity');
+  // 安全策略总闸（docs/THREAT-MODEL.md）：shell 分级、worker 降级、loop 预算。
+  // 在实际执行代码层拒绝，与提示词无关；拒绝文案面向模型给出可执行的下一步。
+  const policy = checkToolPolicy({
+    tool: name,
+    args,
+    conversationId: context.caller.conversationId,
+    sessionId: context.caller.sessionId ?? null,
+    agent: context.agent
+  });
   const invokeHandler = (): Promise<ToolResult> => {
     handlerRan = true;
     return run();
@@ -728,6 +738,8 @@ async function dispatchTracked(
           )
         : nested && (name === 'exec' || name === 'session_finish' || isFinish)
         ? Promise.resolve(fail('DIRECT_CALL_REQUIRED: call this lifecycle tool directly, outside exec. No action was taken.'))
+        : !policy.allowed
+        ? Promise.resolve(fail(policy.refusal!))
         : invokeHandler()
   );
   markTiming('handler');

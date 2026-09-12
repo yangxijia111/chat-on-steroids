@@ -71,6 +71,7 @@ export function loopAfterTurnFor(conversationId: string): boolean {
   return control.enabled && control.mode === 'loop' && control.afterTurn;
 }
 import { resumeBootstrapMatches, resumeBootstrapText } from './session/handoff.js';
+import { loopBudgetExhaustedFor } from './security/loop-budget.js';
 import {
   GOAL_LOOP_STOP_REFUSED,
   GOAL_LOOP_TRAILER,
@@ -1281,6 +1282,10 @@ export function startGoalDraft(input: StartGoalDraftInput): GoalDraftView {
     existing.abort?.abort();
     drafts.delete(input.conversationId);
   }
+  // 安全预算（docs/THREAT-MODEL.md C2）：armed 期间的工具调用在策略引擎计数，
+  // 这里在起草下一条自动回复前做只读检查——预算耗尽后 Loop 不再自动续写。
+  const exhausted = loopBudgetExhaustedFor(input.conversationId);
+  if (exhausted) throw new Error(exhausted);
   const settings = getConfig().goal;
   const backend = goalBackendFor(goalDrivingMode(input.conversationId));
   const draft: GoalDraft = {
