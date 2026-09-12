@@ -30,7 +30,6 @@ const { startBridge, stopBridge, resetBridgeForTests } = await import('../src/ma
 const { makeTempDir, removeTempDir } = await import('./helpers.js');
 
 let dir: string;
-let base: string;
 let port: number;
 
 beforeAll(async () => {
@@ -42,7 +41,6 @@ beforeAll(async () => {
   await saveConfig(defaultConfig());
   port = (await startBridge())!;
   expect(port).not.toBeNull();
-  base = `http://127.0.0.1:${port}`;
 });
 
 afterAll(async () => {
