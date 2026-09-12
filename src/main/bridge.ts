@@ -656,6 +656,21 @@ function originOf(req: http.IncomingMessage): {
   return { ok: false, origin: null };
 }
 
+/**
+ * Host 头必须是本机回环拼写（docs/THREAT-MODEL.md H2）。
+ *
+ * 与 MCP endpoint 的 localhostHostValidation 同理：DNS rebinding 下，一个被解析到
+ * 本机端口的外部域名会带着浏览器 Origin 命中这里。Origin 层已拒绝网页，但 Host
+ * 校验让「非回环主机名一律 403」成为独立一层，而不依赖上游恰好携带 Origin。
+ * 缺 Host 的 HTTP/1.0 客户端按拒绝处理——本 app 的扩展与测试都讲 HTTP/1.1。
+ */
+function hostIsLoopback(req: http.IncomingMessage): boolean {
+  const host = req.headers.host;
+  if (typeof host !== 'string' || host === '') return false;
+  const bare = host.split(':')[0]!.toLowerCase();
+  return bare === '127.0.0.1' || bare === 'localhost' || bare === '[::1]';
+}
+
 function safeEqual(a: string, b: string): boolean {
   const bufA = Buffer.from(a, 'utf8');
   const bufB = Buffer.from(b, 'utf8');
@@ -1333,6 +1348,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
   }
 
   if (!originAllowed) return json(res, 403, { error: 'forbidden_origin' }, null);
+  if (!hostIsLoopback(req)) return json(res, 403, { error: 'forbidden_host' }, null);
 
   noteExtensionVersion(req);
 
