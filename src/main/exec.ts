@@ -64,7 +64,15 @@ export interface ExecResult {
   durationMs: number;
 }
 
-/** Environment variables we never hand to a child process. */
+/**
+ * Environment variables we never hand to a child process.
+ *
+ * 安全加固（docs/THREAT-MODEL.md H6）：原实现只按名单删除 5 个已知键，用户环境里
+ * 其余任何凭据（云 CLI、CI token、SSH 代理）都会原样传给模型选定的进程。现在按
+ * 「名称含凭据语义」的形状清洗：KEY/TOKEN/SECRET/PASSWORD/CREDENTIAL/AUTH/
+ * PRIVATE 字样，叠加常见云厂商前缀。这仍是过滤式继承而非白名单 —— 完整继承保证
+ * 用户工具链（JAVA_HOME、NODE_OPTIONS 等）不被破坏，凭据形状的键不再外泄。
+ */
 const SECRET_ENV_KEYS = [
   'CONTROL_PLANE_API_KEY',
   'OPENAI_API_KEY',
@@ -72,6 +80,23 @@ const SECRET_ENV_KEYS = [
   'CLOUDFLARED_TOKEN',
   'CLOUDFLARED_TUNNEL_TOKEN'
 ];
+
+const SECRET_NAME_SHAPE = /(KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH|PRIVATE)([_-]|$)|^(_?AUTH|ANTHROPIC_API_KEY|GEMINI_API_KEY|GOOGLE_API_KEY|OPENROUTER_KEY|HF_TOKEN|HUGGING_FACE_HUB_TOKEN|CI_JOB_TOKEN|TF_TOKEN|VAULT_TOKEN)/i;
+const SECRET_PREFIXES = ['AWS_', 'AZURE_', 'GOOGLE_', 'GITHUB_', 'GITLAB_', 'STRIPE_', 'SLACK_', 'TWILIO_', 'SENDGRID_', 'MAILGUN_', 'POSTMARK_', 'DATADOG_', 'GRAPHQL_', 'SENTRY_', 'NPM_CONFIG_'];
+
+function isSecretEnvName(name: string): boolean {
+  if (SECRET_ENV_KEYS.some((secret) => secret === name.toUpperCase())) return true;
+  if (SECRET_NAME_SHAPE.test(name)) return true;
+  return SECRET_PREFIXES.some((prefix) => name.toUpperCase().startsWith(prefix));
+}
+
+/** 就地删除环境中凭据形状的键（Windows 大小写不敏感由 deleteEnvValue 处理）。 */
+export function scrubSecretEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  for (const key of [...Object.keys(env)]) {
+    if (isSecretEnvName(key)) deleteEnvValue(env, key);
+  }
+  return env;
+}
 
 function validateEnvironment(overrides: CommandEnvironment | undefined): void {
   if (!overrides) return;
@@ -104,9 +129,11 @@ export function childEnv(overrides?: CommandEnvironment): NodeJS.ProcessEnv {
   const env = normalizeEnvironment(process.env);
   const ripgrep = locateRipgrep();
   if (ripgrep) prependPath(env, path.dirname(ripgrep));
-  // Windows environment keys are case-insensitive. Remove every inherited spelling of
-  // connector/control-plane secrets before applying values explicitly supplied by the caller.
-  for (const secret of SECRET_ENV_KEYS) deleteEnvValue(env, secret);
+  // Remove every inherited spelling that looks like a credential before applying values
+  // explicitly supplied by the caller. Explicit overrides are still allowed: a command
+  // that names its own TOKEN_FOO value passes it on purpose, and the shell-level
+  // classifier audits that separately.
+  scrubSecretEnv(env);
   if (overrides) applyEnvOverrides(env, overrides);
   ensureUsablePath(env);
   return env as NodeJS.ProcessEnv;

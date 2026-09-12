@@ -20,7 +20,7 @@ import path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { Worker } from 'node:worker_threads';
 import { ensureUsablePath, normalizeEnvironment } from '../env.js';
-import { findWindowsPowerShell, terminateProcessTree } from '../exec.js';
+import { findWindowsPowerShell, scrubSecretEnv, terminateProcessTree } from '../exec.js';
 import { logInfo, logWarn } from '../logger.js';
 import type { MacOSDesktopAccessStatus, MacOSPermissionState } from '../../shared/types.js';
 import { HELPER_SCRIPT } from './helper.js';
@@ -372,7 +372,8 @@ async function startHelper(): Promise<HelperRuntime> {
       if (scriptFile) await fs.writeFile(scriptFile, `\uFEFF${HELPER_SCRIPT}`, 'utf8');
       if (helperStopping) throw new ComputerError('The desktop helper is shutting down.');
       return await new Promise<HelperRuntime>((resolve, reject) => {
-        const env = normalizeEnvironment(process.env);
+        // 同 exec 子进程：helper 是应用自有代码，但凭据形状的环境键没有理由下沉给它。
+        const env = scrubSecretEnv(normalizeEnvironment(process.env));
         ensureUsablePath(env);
         let host: string;
         let args: string[];
