@@ -231,6 +231,21 @@ const rootSchema = z.object({
 });
 
 /**
+ * Basename of a stored root path, independent of the host platform.
+ *
+ * A config travels between Windows and POSIX: `C:\Users\me\科目一` is a legal root entry on
+ * Linux and macOS too. `path.basename` only splits on the *host* separator, so on POSIX that
+ * whole Windows path stayed a single segment and the repaired virtual name became
+ * `c-users-example-科目一` instead of `科目一` — reintroducing exactly the ambiguity this
+ * repair exists to remove. Splitting on both separators keeps the result identical everywhere.
+ */
+function rootBasename(rootPath: string): string {
+  const trimmed = rootPath.replace(/[\\/]+$/, '');
+  const cut = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'));
+  return cut === -1 ? trimmed : trimmed.slice(cut + 1);
+}
+
+/**
  * Repairs root names from older/hand-edited configs without ever publishing an ambiguous
  * virtual namespace. Reserved names and duplicates are renamed deterministically in input
  * order, preserving the first usable spelling and suffixing later collisions.
@@ -255,7 +270,7 @@ function uniqueStoredRoots(roots: Root[]): Root[] {
   };
   return roots.map((root) => {
     const degraded = /^folder(?:-\d+)?$/.test(root.name);
-    const fromBasename = normaliseRootName(path.basename(root.path) || 'folder');
+    const fromBasename = normaliseRootName(rootBasename(root.path) || 'folder');
     const wanted = degraded && fromBasename !== 'folder' ? fromBasename : root.name;
     const name = nextFree(wanted);
     used.add(name);
