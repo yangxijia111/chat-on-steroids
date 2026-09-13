@@ -152,9 +152,10 @@ export function checkToolPolicy(context: PolicyCheckContext): PolicyVerdict {
     }
   }
 
-  // ---- Shell 分级
+  // ---- Shell 分级 + 工作区信任
   if (context.tool === 'exec_command' || context.tool === 'write_stdin') {
     const shellLevel = security?.shellLevel ?? 2;
+    const workspaceTrust = security?.workspaceTrust ?? 'trusted';
     const texts = extractCommandTexts(context);
     const userAllowlist = security?.shellAllowlist ?? [];
     let worst: ShellClassification | null = null;
@@ -165,6 +166,18 @@ export function checkToolPolicy(context: PolicyCheckContext): PolicyVerdict {
       if (!worst || severity(classification.level) > severity(worst.level)) worst = classification;
     }
     if (worst) {
+      // 执行项目代码（npm test、make、pytest、cargo build、Unreal/Unity build…）
+      // 是独立于 shell 分级的信任闸：陌生仓库里的一次构建就是执行仓库作者留下的
+      // 任意代码（postinstall、conftest、build.rs、自定义构建步骤）。
+      if (worst.category === 'project-code-execution' && workspaceTrust === 'untrusted') {
+        const refusal =
+          'WORKSPACE_TRUST_REQUIRED: this command executes project code ' +
+          `(${worst.rule}), and this workspace is marked untrusted. Building, testing or scripting an ` +
+          'untrusted repository runs code its authors left in it. Ask the user to mark the workspace ' +
+          'trusted in Settings (Security) if they have reviewed the repository.';
+        audit(context, 'shell.execute', texts[0] ?? null, 'medium', 'denied-workspace-trust', worst.rule);
+        return { allowed: false, refusal };
+      }
       const passes = shellLevelAllows(shellLevel, worst.level);
       if (!passes) {
         const refusal = shellLevelRefusal(shellLevel, worst);

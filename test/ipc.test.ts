@@ -11,7 +11,14 @@ import path from 'node:path';
 
 type Handler = (event: unknown, payload: unknown) => Promise<unknown>;
 const handlers = new Map<string, Handler>();
-// sender 校验后 IPC 处理器要求 event.sender.id 与主窗口一致；测试以 id=7 模拟。
+
+/**
+ * Half of the sender-gate contract; `trustedWindow()` below is the other half.
+ *
+ * `src/main/ipc.ts` refuses any channel whose `event.sender.id` is not the live main
+ * window's `webContents.id`. A suite that invokes handlers directly has to supply both
+ * sides of that comparison, so this event and that window must carry the same id.
+ */
 const trustedEvent = { sender: { id: 7 } };
 
 vi.mock('electron', () => ({
@@ -71,14 +78,37 @@ const { resetWorkspaces, setWorkspaceFor, workspaceEntries } = await import('../
 const { makeTempDir, removeTempDir } = await import('./helpers.js');
 
 let dir: string;
-let currentWindow: {
+
+type TestWindow = {
   setBackgroundColor: ReturnType<typeof vi.fn>;
   setTitleBarOverlay: ReturnType<typeof vi.fn>;
   isDestroyed: () => boolean;
   webContents: { send: ReturnType<typeof vi.fn>; id: number; isDestroyed: () => boolean };
-} | null = null;
+};
+
+/**
+ * A live main window that the sender gate will resolve an id from.
+ *
+ * Without one the gate cannot name a trusted sender and refuses every channel, which is
+ * correct for the app — it has exactly one window — but it makes every success-path
+ * assertion in this suite unreachable. `beforeEach` installs this window so those paths
+ * stay exercised; the suites that are about window absence or teardown install their own.
+ */
+const trustedWindow = (): TestWindow => ({
+  setBackgroundColor: vi.fn(),
+  setTitleBarOverlay: vi.fn(),
+  isDestroyed: () => false,
+  webContents: { send: vi.fn(), id: trustedEvent.sender.id, isDestroyed: () => false }
+});
+
+let currentWindow: TestWindow | null = null;
 /** How many times the IPC layer asked the app to quit so a staged update can be applied. */
 let quitToInstallCalls = 0;
+const quitToInstall = (): void => {
+  quitToInstallCalls += 1;
+};
+/** The one place this suite (re)binds the IPC surface to the window under test. */
+const registerTestIpc = (window: () => unknown): void => registerIpc(window as any, quitToInstall);
 
 const save = (patch: unknown, base: unknown = getConfig()): Promise<any> =>
   handlers.get('settings:save')!(trustedEvent, { patch, base }) as Promise<any>;
@@ -98,7 +128,7 @@ it('validates dropped file count and stages arbitrary native file types', async 
 it('publishes Goal draft progress through the session refresh channel without a new transcript event', async () => {
   const { startGoalDraft, resetGoalStateForTests } = await import('../src/main/goal.js');
   const session = await createSession({ title: 'Goal progress', conversationId: 'ipc-goal-progress' });
-  currentWindow = { setBackgroundColor: vi.fn(), setTitleBarOverlay: vi.fn(), isDestroyed: () => false, webContents: { send: vi.fn(), id: 7, isDestroyed: () => false } };
+  currentWindow = trustedWindow();
   try {
     startGoalDraft({ conversationId: session.conversationId!, sessionId: session.id, turnId: 'finished-turn', deferStart: true });
     expect(currentWindow.webContents.send).toHaveBeenCalledWith('session:changed');
@@ -198,7 +228,7 @@ it('projects exact retained worker parents without adopting same-name unrelated 
 });
 
 it('adds picker-selected projects, reuses containing approval, and leaves cancellation unchanged', async () => {
-  currentWindow = { setBackgroundColor: vi.fn(), setTitleBarOverlay: vi.fn(), isDestroyed: () => false, webContents: { send: vi.fn(), id: 7, isDestroyed: () => false } };
+  currentWindow = trustedWindow();
   const folder = path.join(dir, 'picker-project');
   await fs.mkdir(path.join(folder, 'child'), { recursive: true });
   await saveConfig({ ...defaultConfig(), roots: [] });
@@ -249,12 +279,7 @@ beforeAll(async () => {
   onSwarmPersistNow((snapshot) => writeDurableNow('ipc-swarm', snapshot));
   onRetiredWorkersPersist(() => writeDurableSoon('ipc-retired-workers', snapshotRetiredWorkers()));
   onRetiredWorkersPersistNow((snapshot) => writeDurableNow('ipc-retired-workers', snapshot));
-  registerIpc(
-    () => currentWindow as any,
-    () => {
-      quitToInstallCalls += 1;
-    }
-  );
+  registerTestIpc(() => currentWindow);
 });
 
 afterAll(async () => {
@@ -269,7 +294,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  currentWindow = null;
+  currentWindow = trustedWindow();
   vi.mocked(dialog.showOpenDialog).mockResolvedValue({ canceled: true, filePaths: [] });
   nativeTheme.themeSource = 'system';
   vi.mocked(safeStorage.isAsyncEncryptionAvailable).mockResolvedValue(true);
@@ -505,11 +530,11 @@ describe('bounded IPC identities and OS launch results', () => {
 
   it('bounds and validates an agent id before it reaches the global broker', async () => {
     const clear = handlers.get('swarm:clearAgent')!;
-    const oversized = (await clear(null, 'worker-' + 'x'.repeat(200_000))) as { ok: boolean; error?: string };
+    const oversized = (await clear(trustedEvent, 'worker-' + 'x'.repeat(200_000))) as { ok: boolean; error?: string };
     expect(oversized.ok).toBe(false);
     expect(oversized.error).toMatch(/64|too big/i);
 
-    const punctuation = (await clear(null, 'worker-1\nspoofed')) as { ok: boolean; error?: string };
+    const punctuation = (await clear(trustedEvent, 'worker-1\nspoofed')) as { ok: boolean; error?: string };
     expect(punctuation.ok).toBe(false);
   });
 });
@@ -589,9 +614,9 @@ describe('settings writes from more than one UI', () => {
     const goal = await import('../src/main/goal.js');
     const retired = vi.spyOn(goal, 'retireGoalDrafts');
     try {
-      await handlers.get('secret:set')!({}, { key: 'openRouterApiKey', value: 'synthetic-inactive-key' });
+      await handlers.get('secret:set')!(trustedEvent, { key: 'openRouterApiKey', value: 'synthetic-inactive-key' });
       expect(retired).not.toHaveBeenCalled();
-      const response = await handlers.get('secret:set')!({}, { key: 'customProviderApiKey', value: 'synthetic-active-key' });
+      const response = await handlers.get('secret:set')!(trustedEvent, { key: 'customProviderApiKey', value: 'synthetic-active-key' });
       expect(retired).toHaveBeenCalledTimes(1);
       expect(response).toMatchObject({ ok: true, data: { hasCustomProviderKey: true } });
       expect(JSON.stringify(response)).not.toContain('synthetic-active-key');
@@ -643,11 +668,7 @@ describe('settings writes from more than one UI', () => {
     expect(getConfig().ui.planBackend).toBe('chatgpt');
   });
   it('does not let a stale renderer snapshot undo a newer extension setting', async () => {
-    currentWindow = {
-      setBackgroundColor: vi.fn(), setTitleBarOverlay: vi.fn(),
-      isDestroyed: () => false,
-      webContents: { send: vi.fn(), id: 7, isDestroyed: () => false }
-    };
+    currentWindow = trustedWindow();
     const original = defaultConfig();
     const base = {
       ...original,
@@ -790,8 +811,8 @@ describe('every link the window offers', () => {
 
   it('opens the OpenRouter key page the goal loop sends people to', async () => {
     const open = handlers.get('link:open')!;
-    expect(await open(null, { url: 'https://openrouter.ai/settings/keys' })).toEqual({ ok: true, data: true });
-    expect(await open(null, { url: 'https://example.com/reference#section' })).toEqual({ ok: true, data: true });
+    expect(await open(trustedEvent, { url: 'https://openrouter.ai/settings/keys' })).toEqual({ ok: true, data: true });
+    expect(await open(trustedEvent, { url: 'https://example.com/reference#section' })).toEqual({ ok: true, data: true });
   });
 
   it.each(['https://example.com/path?q=hello', 'http://localhost:3000/', 'mailto:person@example.com?subject=Hello'])(
@@ -1113,12 +1134,15 @@ describe('renderer pushes after the window is gone', () => {
       }
     } as unknown as import('electron').BrowserWindow;
 
-    registerIpc(
-      () => destroyed,
-      () => {}
-    );
-    expect(() => logInfo('teardown progress written after the window went away')).not.toThrow();
-    expect(touchedWebContents).toBe(false);
+    registerTestIpc(() => destroyed);
+    try {
+      expect(() => logInfo('teardown progress written after the window went away')).not.toThrow();
+      expect(touchedWebContents).toBe(false);
+    } finally {
+      // Hand the surface back to the window under test. Leaving this suite bound to the
+      // destroyed window would leave the sender gate refusing every later suite's channels.
+      registerTestIpc(() => currentWindow);
+    }
   });
 });
 

@@ -20,7 +20,8 @@ import {
   envValue,
   normalizeEnvironment,
   pathEntries,
-  prependPath
+  prependPath,
+  setEnvValue
 } from './env.js';
 import { locateRipgrep } from './ripgrep.js';
 
@@ -134,6 +135,13 @@ export function childEnv(overrides?: CommandEnvironment): NodeJS.ProcessEnv {
   // that names its own TOKEN_FOO value passes it on purpose, and the shell-level
   // classifier audits that separately.
   scrubSecretEnv(env);
+  // git 扩展面收紧（shell-policy.ts GIT_UNSAFE_FLAGS 的环境层补充）：子进程非交互
+  // （无 tty），git 本不会启用 pager，但显式固定 cat 可挡住 core.pager/GIT_PAGER
+  // 环境注入；GIT_EDITOR 固定为 no-op 防止 commit/tag 等操作拉起任意编辑器。对
+  // 其他程序无影响（cat 是 pager 的安全缺省值）。
+  setEnvValue(env, 'GIT_PAGER', 'cat');
+  setEnvValue(env, 'PAGER', 'cat');
+  setEnvValue(env, 'GIT_EDITOR', ':');
   if (overrides) applyEnvOverrides(env, overrides);
   ensureUsablePath(env);
   return env as NodeJS.ProcessEnv;

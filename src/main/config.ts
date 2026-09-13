@@ -140,6 +140,9 @@ const DEFAULT_ARTIFACTS: ArtifactSettings = {
  */
 const DEFAULT_SECURITY: SecuritySettings = {
   shellLevel: 2,
+  // trusted 保持既有行为（level 2 下 npm test 等照常可用）；untrusted 是用户为
+  // 陌生仓库显式选择的收紧档，见 SecuritySettings.workspaceTrust 注释。
+  workspaceTrust: 'trusted',
   shellAllowlist: [],
   workerPermissions: 'restricted',
   desktopAppAllowlist: [],
@@ -480,6 +483,7 @@ const configSchema = z.object({
   security: z
     .object({
       shellLevel: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3)]).optional().default(DEFAULT_SECURITY.shellLevel),
+      workspaceTrust: z.enum(['untrusted', 'trusted', 'full']).optional().default(DEFAULT_SECURITY.workspaceTrust),
       shellAllowlist: z.array(z.string().min(1).max(200)).max(64).optional().default([]),
       workerPermissions: z.enum(['restricted', 'inherit']).optional().default(DEFAULT_SECURITY.workerPermissions),
       desktopAppAllowlist: z.array(z.string().min(1).max(260)).max(64).optional().default([]),

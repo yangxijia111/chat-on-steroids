@@ -60,10 +60,16 @@ describe('policy engine: shell level enforcement', () => {
     expect(verdict.refusal).toContain('SHELL_LEVEL_TOO_LOW');
   });
 
-  it('level 1 refuses unlisted programs but keeps allowlisted builds', async () => {
+  it('level 1 refuses unlisted programs and project-code execution, keeps read-only queries', async () => {
     await saveConfig({ ...defaultConfig(), security: { ...defaultConfig().security, shellLevel: 1 } });
-    expect(call('exec_command', { cmd: 'npm test' }).allowed).toBe(true);
     expect(call('exec_command', { cmd: 'git status' }).allowed).toBe(true);
+    expect(call('exec_command', { cmd: 'node --version' }).allowed).toBe(true);
+    // 执行项目代码的命令即使在受控子命令列表内也不再是 level 1 低风险。
+    expect(call('exec_command', { cmd: 'npm test' }).allowed).toBe(false);
+    expect(call('exec_command', { cmd: 'npx prettier .' }).allowed).toBe(false);
+    expect(call('exec_command', { cmd: 'make' }).allowed).toBe(false);
+    expect(call('exec_command', { cmd: 'pytest' }).allowed).toBe(false);
+    expect(call('exec_command', { cmd: 'node -e "1"' }).allowed).toBe(false);
     expect(call('exec_command', { cmd: 'npm install' }).allowed).toBe(false);
     await saveConfig({ ...defaultConfig(), security: { ...defaultConfig().security, shellLevel: 2 } });
   });
@@ -91,6 +97,43 @@ describe('policy engine: shell level enforcement', () => {
   it('short stdin answers (y/n/enter) are not blocked', () => {
     expect(call('write_stdin', { session_id: 1, chars: 'y\n' }).allowed).toBe(true);
     expect(call('write_stdin', { session_id: 1, chars: '\n' }).allowed).toBe(true);
+  });
+});
+
+describe('policy engine: workspace trust gate', () => {
+  it('trusted (default) lets project-code execution through at level 2', () => {
+    expect(call('exec_command', { cmd: 'npm test' }).allowed).toBe(true);
+    expect(call('exec_command', { cmd: 'cargo build' }).allowed).toBe(true);
+  });
+
+  it('untrusted refuses project-code execution regardless of shell level', async () => {
+    for (const shellLevel of [1, 2, 3] as const) {
+      await saveConfig({
+        ...defaultConfig(),
+        security: { ...defaultConfig().security, workspaceTrust: 'untrusted', shellLevel }
+      });
+      const verdict = call('exec_command', { cmd: 'npm test' });
+      expect(verdict.allowed, `shellLevel=${shellLevel}`).toBe(false);
+      expect(verdict.refusal, `shellLevel=${shellLevel}`).toContain('WORKSPACE_TRUST_REQUIRED');
+      // 只读命令不受影响。
+      expect(call('exec_command', { cmd: 'git status' }).allowed).toBe(true);
+      expect(call('exec_command', { cmd: 'ls' }).allowed).toBe(true);
+    }
+    await saveConfig({ ...defaultConfig(), security: { ...defaultConfig().security } });
+  });
+
+  it('untrusted also gates project code typed into a live shell (write_stdin)', async () => {
+    await saveConfig({ ...defaultConfig(), security: { ...defaultConfig().security, workspaceTrust: 'untrusted' } });
+    const verdict = call('write_stdin', { session_id: 1, chars: 'make test\n' });
+    expect(verdict.allowed).toBe(false);
+    expect(verdict.refusal).toContain('WORKSPACE_TRUST_REQUIRED');
+    await saveConfig({ ...defaultConfig(), security: { ...defaultConfig().security } });
+  });
+
+  it('full trust behaves like trusted for project code', async () => {
+    await saveConfig({ ...defaultConfig(), security: { ...defaultConfig().security, workspaceTrust: 'full' } });
+    expect(call('exec_command', { cmd: 'npm test' }).allowed).toBe(true);
+    await saveConfig({ ...defaultConfig(), security: { ...defaultConfig().security } });
   });
 });
 

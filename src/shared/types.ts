@@ -312,6 +312,18 @@ export interface McpSettings {
 }
 
 /**
+ * 工作区信任等级：与 shell 分级正交的第二个轴（docs/THREAT-MODEL.md）。
+ *
+ * - untrusted：只读考察陌生仓库/不受信内容。执行项目代码的命令（npm test、
+ *   cargo build、pytest、make、Unreal/Unity build 等）一律拒绝——这些命令会运行
+ *   仓库里任何人留下的脚本（postinstall、conftest、build.rs、自定义构建步骤）。
+ * - trusted：日常开发默认。项目代码可以执行，仍受 shell 分级约束。
+ * - full：完全信任（无人值守自动化），与 trusted 同样放行项目代码执行；
+ *   区别主要表达用户的意图等级，并配合 Full Automation preset 使用。
+ */
+export type WorkspaceTrust = 'untrusted' | 'trusted' | 'full';
+
+/**
  * 安全加固设置（docs/THREAT-MODEL.md）。每一项都默认选择最小权限，
  * 用户可在设置中显式放宽。
  */
@@ -322,6 +334,8 @@ export interface SecuritySettings {
    *   3 完全 shell（用户显式开启）。
    */
   shellLevel: 0 | 1 | 2 | 3;
+  /** 工作区信任等级；project-code-execution 类命令要求 trusted 以上。 */
+  workspaceTrust: WorkspaceTrust;
   /** 用户追加的 level 1 allowlist 命令前缀（如 Unreal/Unity 构建命令）。 */
   shellAllowlist: string[];
   /**

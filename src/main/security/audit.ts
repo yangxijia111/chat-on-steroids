@@ -21,12 +21,16 @@ export type AuditRiskLevel = 'low' | 'medium' | 'high' | 'critical';
 export type AuditDecision =
   | 'allowed'
   | 'allowed-low-risk'
+  | 'allowed-escalated'
   | 'denied-shell-level'
+  | 'denied-workspace-trust'
   | 'denied-worker-permission'
   | 'denied-capability'
   | 'denied-budget'
   | 'denied-desktop-target'
-  | 'allowed-escalated';
+  | 'denied-critical-approval'
+  | 'approved-critical-once'
+  | 'approved-critical-session';
 
 export interface SecurityAuditEntry {
   time: number;

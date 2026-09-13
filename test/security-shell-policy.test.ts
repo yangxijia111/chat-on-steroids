@@ -97,7 +97,6 @@ describe('shell policy: system mutation and persistence', () => {
     ['echo "evil" >> ~/.bashrc', 'persistence', 'high'],
     ['sc create evil binPath= cmd', 'system-mutate', 'high'],
     ['netsh advfirewall set allprofiles state off', 'system-mutate', 'high'],
-    ['Set-ExecutionPolicy Bypass', 'system-mutate', 'high'],
     ['npm install -g evil-pkg', 'global-install', 'high'],
     ['choco install evil', 'global-install', 'high'],
     ['apt install evil-package', 'global-install', 'high'],
@@ -110,23 +109,34 @@ describe('shell policy: system mutation and persistence', () => {
   });
 });
 
-describe('shell policy: allowlist (level 1 commands)', () => {
+describe('shell policy: security software modification', () => {
+  it.each([
+    'Set-ExecutionPolicy Bypass',
+    'Set-MpPreference -DisableRealtimeMonitoring $true',
+    'Add-MpPreference -ExclusionPath C:\\',
+    'Remove-MpPreference -ExclusionPath C:\\',
+    'MpCmdRun.exe -RemoveDefinition -All',
+    'applocker policy apply'
+  ])('%s is critical security-software', (command) => {
+    const result = classify(command);
+    expect(result.category).toBe('security-software');
+    expect(result.level).toBe('critical');
+  });
+});
+
+describe('shell policy: allowlist (level 1 commands, near-read-only)', () => {
   it.each([
     'git status',
     'git diff',
     'git log --oneline -5',
     'git -C /repo status',
     'git show HEAD',
-    'npm test',
-    'npm run lint',
-    'npm run build',
-    'cargo test',
-    'cargo build',
-    'dotnet test',
-    'dotnet build',
-    'cmake --build build',
-    'pytest',
+    'git log -p',
     'node --version',
+    'npm ls',
+    'python --version',
+    'cargo --version',
+    'pip list',
     'ls -la',
     'Get-ChildItem',
     'Get-Content README.md',
@@ -142,9 +152,62 @@ describe('shell policy: allowlist (level 1 commands)', () => {
     expect(classify('git push --force').level).not.toBe('low');
   });
 
-  it('only allows known npm run scripts', () => {
-    expect(classify('npm run test').level).toBe('low');
-    expect(classify('npm run deploy-production').level).not.toBe('low');
+  // Level 1 的语义是「真正接近只读」：执行项目代码的命令一律不是 low，
+  // 无论参数看起来多常规（THREAT-MODEL 二阶段 P0）。
+  it.each([
+    'npm test',
+    'npm ci',
+    'npm run lint',
+    'npm run build',
+    'npx prettier --check .',
+    'node -e "console.log(1)"',
+    'node script.js',
+    'cargo test',
+    'cargo build',
+    'dotnet test',
+    'dotnet build',
+    'cmake --build build',
+    'make',
+    'make -j8',
+    'msbuild Project.sln',
+    'pytest',
+    'vitest run',
+    'jest',
+    'python -m pytest',
+    'python build.py',
+    'bash build.sh',
+    'powershell -File build.ps1',
+    'RunUAT.bat BuildCookRun',
+    'tsc'
+  ])('%s is project-code-execution, not allowlisted at level 1', (command) => {
+    const result = classify(command);
+    expect(result.category).toBe('project-code-execution');
+    expect(result.level).toBe('medium');
+  });
+});
+
+describe('shell policy: git external execution paths', () => {
+  it.each([
+    'git -c core.pager=sh log',
+    'git -c diff.external=evil diff',
+    'git --exec-path=/tmp/evil log',
+    'git log --paginate',
+    'git diff --ext-diff',
+    'git show --textconv HEAD'
+  ])('%s is downgraded from the level-1 allowlist', (command) => {
+    const result = classify(command);
+    expect(result.category).toBe('git-unsafe-extension');
+    expect(result.level).toBe('medium');
+  });
+
+  it.each([
+    'git -C /repo status',
+    'git log -p --stat',
+    'git diff --no-ext-diff',
+    'git show --no-textconv HEAD'
+  ])('%s stays a low-risk read-only query', (command) => {
+    const result = classify(command);
+    expect(result.level).toBe('low');
   });
 });
 
