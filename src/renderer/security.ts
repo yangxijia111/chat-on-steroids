@@ -107,8 +107,11 @@ function applyChecked(control: HTMLInputElement, next: boolean, previous?: boole
 
 /** 把新的 AppState 画到 Security 控件（脏字段守卫，不抢用户正在编辑的值）。 */
 export function applySecurityState(next: AppState, previous: AppState | null): void {
+  // 局部构造的 AppState（测试/旧快照）可能没有 security 段：跳过绘制而不是
+  // 让异常中断整个 apply 管线。
+  if (!next.config?.security) return;
   const security = next.config.security;
-  const before = previous?.config.security;
+  const before = previous?.config?.security;
   applyValue($<HTMLSelectElement>('securityShellLevel'), String(security.shellLevel), before && String(before.shellLevel));
   applyValue($<HTMLSelectElement>('securityWorkspaceTrust'), security.workspaceTrust, before?.workspaceTrust);
   applyValue($<HTMLTextAreaElement>('securityShellAllowlist'), security.shellAllowlist.join('\n'), before?.shellAllowlist.join('\n'));
