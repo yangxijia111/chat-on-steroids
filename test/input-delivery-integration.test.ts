@@ -11,7 +11,14 @@ import { APP_VERSION, BRIDGE_PROTOCOL } from '../src/main/version.js';
 import * as browserWake from '../src/main/browser-wake.js';
 type Handler = (event: unknown, payload: unknown) => Promise<any>;
 const handlers = new Map<string, Handler>();
-const trustedEvent = { sender: { id: 7 } };
+// 二阶段 P2 的 IPC frame gate：调用必须来自主窗口的主 frame，且 URL 与窗口
+// 当前加载的 Renderer 一致 —— event 与 getWindow() 两侧都要带上同一 frame。
+const RENDERER_URL = 'file:///app/dist/renderer/index.html';
+const trustedFrame = { url: RENDERER_URL };
+const trustedEvent = {
+  sender: { id: 7, mainFrame: trustedFrame },
+  senderFrame: trustedFrame
+};
 vi.mock('electron', () => ({
   ipcMain: { handle: (name: string, handler: Handler) => handlers.set(name, handler), removeHandler: (name: string) => handlers.delete(name) },
   BrowserWindow: class {}, clipboard: {}, dialog: {}, shell: {}, nativeTheme: { themeSource: 'system' },
@@ -33,17 +40,20 @@ const { initSecretsPath } = await import('../src/main/secrets.js');
 const { initDurableStore, flushDurable, resetDurableForTests, writeDurableNow } = await import('../src/main/durable.js');
 const { createSession, rebindSession, initSessionStore, resetSessionStoreForTests } = await import('../src/main/session/store.js');
 const { registerIpc } = await import('../src/main/ipc.js');
-const { bridgePort, startBridge, stopBridge } = await import('../src/main/bridge.js');
+const { beginPairing, bridgePort, startBridge, stopBridge } = await import('../src/main/bridge.js');
 const input = await import('../src/main/session/input.js');
 const goal = await import('../src/main/goal.js');
 const { makeTempDir, removeTempDir } = await import('./helpers.js');
 let directory: string;
 let bearer: string;
 const pushed = vi.fn();
+// 二阶段 P2：/pair 一律要求显式 chrome-extension Origin 并兑换桌面端签发的一次性 code。
+const EXTENSION_ORIGIN = 'chrome-extension://abcdefghijklmnopabcdefghijklmnop';
 async function post(route: string, body: unknown) {
   const response = await fetch(`http://127.0.0.1:${bridgePort()}${route}`, {
     method: 'POST', headers: { 'content-type': 'application/json', 'x-extension-version': APP_VERSION,
-      'x-extension-protocol': String(BRIDGE_PROTOCOL), ...(bearer ? { authorization: `Bearer ${bearer}` } : {}) }, body: JSON.stringify(body)
+      'x-extension-protocol': String(BRIDGE_PROTOCOL), origin: EXTENSION_ORIGIN,
+      ...(bearer ? { authorization: `Bearer ${bearer}` } : {}) }, body: JSON.stringify(body)
   });
   return { status: response.status, body: await response.json() as any };
 }
@@ -51,9 +61,10 @@ beforeAll(async () => {
   directory = await makeTempDir('clf-input-integration-');
   initConfigPath(directory); initSecretsPath(directory); initDurableStore(directory); initSessionStore(directory);
   await saveConfig(defaultConfig());
-  registerIpc(() => ({ isDestroyed: () => false, webContents: { send: pushed, id: 7, isDestroyed: () => false } }) as never, () => undefined);
+  registerIpc(() => ({ isDestroyed: () => false, webContents: { send: pushed, id: 7, isDestroyed: () => false, mainFrame: trustedFrame } }) as never, () => undefined);
   await startBridge();
-  const paired = await post('/pair', {});
+  const { code } = beginPairing();
+  const paired = await post('/pair', { code });
   expect(paired.status).toBe(200);
   bearer = paired.body.token;
 });
