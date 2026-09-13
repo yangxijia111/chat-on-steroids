@@ -1,6 +1,7 @@
 # Threat Model — Chat On Steroids security hardening
 
-This document is the Phase 1 deliverable of the `security-hardening` branch. It maps the
+This document is the Phase 1 deliverable of the `security-hardening` branch, extended by the
+Phase 2 pass (second hardening iteration, see §4). It maps the
 system's trust boundaries, lists where model-generated content reaches high-privilege
 execution, and grades the findings that the later phases address. Line references are to
 the commit this branch started from.
@@ -132,3 +133,41 @@ no per-agent degradation, and no resource budget.
 | Bridge/IPC | Host-header check on the bridge, IPC sender validation, plugin install auditing | H2, H3, L1 |
 | Loop budget | Per-run budget: tool calls, exec calls, runtime; exhausted budget stops the loop | C2, M8 |
 | Docs | `SECURITY-HARDENING.md` review of every change, defaults and residual risks | — |
+
+## 4. Phase 2 findings (second hardening pass)
+
+The Phase 1 review left a second tier of gaps that the decision model could not express.
+Findings below are the Phase 2 scope; each is fixed in code at the execution layer.
+
+| ID | Severity | Finding | Resolution |
+|----|----------|---------|------------|
+| P2-1 | Critical | Shell level 1's allowlist still admitted commands that execute project code: `npx`, `node -e`, `npm test/ci`, `make`, `pytest`, `vitest`, `msbuild`, `cargo build`, `cmake --build`… A hostile repository's postinstall/conftest/build script runs under level 1, and even at level 2 nothing distinguishes "run code this repo's authors left behind" from ordinary commands. | Level 1 allowlist is now strictly near-read-only (read-only git, file reads, version checks). A new `project-code-execution` category classifies every project-code entry point (package-manager scripts, test runners, build systems, interpreters running scripts, wrapper shells, RunUAT/Unity). A new orthogonal `WorkspaceTrust` axis (`untrusted | trusted | full`) refuses that category entirely in untrusted workspaces at any shell level. |
+| P2-2 | High | git's own execution paths — `-c` config injection (`core.pager`, `diff.*.command`), `--exec-path`, `--paginate`, `--ext-diff`, `--textconv` — dropped out of the "read-only git" reasoning. | Those flags downgrade a git command out of the level-1 allowlist (`git-unsafe-extension`); child processes get `GIT_PAGER=cat`, `PAGER=cat`, `GIT_EDITOR=:`. `git -C <path> <read-only-subcommand>` stays allowed. |
+| P2-3 | Critical | Worker degradation was keyed on core tool names; third-party plugin tool names had no mapping and bypassed the restricted-worker gate entirely. | `ToolSecurityDescriptor` table (capabilities, risk, network/filesystem/processExecution/desktopControl, workerPolicy) is the single metadata source for core *and* plugin tools. Unknown names get a fail-closed descriptor (risk high, all capability faces, workerPolicy deny); plugin self-reported MCP annotations are not a security boundary. |
+| P2-4 | Critical | Shell level 3 auto-ran critical commands. One granted level = full autorisation for credential access, privilege escalation, destructive system operations, persistence, obfuscated commands, download-and-execute and security-software changes. | `security/approval.ts`: those seven categories require a local Electron confirmation (Allow once / Allow for session / Deny) at *any* shell level. The model can never self-authorize; missing window, dialog failure or 120 s timeout deny. Decisions land in the audit log. |
+| P2-5 | High | Desktop target gate was fail-open: unresolvable targets passed, and allowlist matching was bidirectional prefix (`startsWith`) — `notepad` admitted `notepad-plus.exe`. | Fail-closed: with an allowlist configured, input/capture/launch refuse targets that cannot be confirmed (no window id, unresolvable window, missing process name). Matching is exact executable basename or exact full path. macOS focusless input batches probe the active window in restricted mode; Windows gates windowless calls. |
+| P2-6 | High | Loop budget keyed on `conversationId`: a worker opening a new conversation escaped the prime's automation budget; worker spawns, desktop actions and file writes were not budgeted at all. | Budget scope is `run:<runId>` for swarm conversations (prime + all workers share one counter; armed detection includes the prime's goal switch) and `conv:<id>` for standalone loops. New dimensions: worker spawns, desktop actions, file modifications, plus the existing tool calls / execs / runtime. |
+| P2-7 | High | `Config.security` existed but the renderer could not reach it: `settings:save` had no security section, and the audit switch was cached at startup — before `loadConfig()` — so `auditLog: false` never survived a restart and runtime changes did not apply. | `settings:save` gains a zod-validated security section with the same three-way merge; `recordSecurityAudit` reads the live config on every entry. New Security settings page (shell level, workspace trust, worker permissions, desktop allowlist, full budget, audit switch) with Safe / Development (recommended) / Full Automation presets — Full Automation is never the default. |
+| P2-8 | High | `/pair` minted a bearer token for *any* loopback caller with any `chrome-extension://` origin and no Origin header requirement; a second local program or hostile extension was equivalent to the real one. | Pairing is desktop-initiated: the app issues a one-time 256-bit code (5-minute TTL, consumed on success) that the user types into the extension popup. `/pair` requires an explicit Origin; the first successful pairing pins that extension's origin and other extensions are refused; Disconnect clears the token latch, the pin and any in-flight code. Bridge protocol 14. |
+| P2-9 | Medium | IPC validated only `event.sender.id`; a nested frame inside the trusted renderer would inherit the sender id. | Handlers additionally require `event.senderFrame === event.sender.mainFrame` and `senderFrame.url` to equal the URL the live main window's main frame loaded. Unknown frames deny. |
+| P2-10 | Medium | CI had no dependency/static-analysis gate. | `security-audit` job (`npm audit --omit=dev`, high+, with explicitly recorded and reasoned exceptions), CodeQL (`security-extended`, includes secret detection) on push/PR/weekly, Dependency Review on PRs. |
+
+### Phase 2 decision model
+
+Phase 1 left tool-name special cases (`if (tool === 'xxx')`) as the working mechanism.
+Phase 2 converges on the intended model — decisions compose from named inputs and live in
+the execution layer:
+
+```text
+Principal (session/agent identity)
++ Workspace Trust        (untrusted | trusted | full)
++ Capability             (checkboxes the user granted)
++ Tool descriptor        (risk, network/filesystem/process/desktop faces, workerPolicy)
++ Shell classification   (category + level, also applied to write_stdin)
++ Approval policy        (critical ⇒ local human confirmation, never model-granted)
++ Automation budget      (per run: calls/execs/spawns/desktop/writes/runtime)
+```
+
+The policy engine (`src/main/security/policy.ts`) reads descriptors, not tool names; the
+classifier, desktop gate and budget module are pure inputs to it. Prompt text remains
+outside the trust boundary throughout.

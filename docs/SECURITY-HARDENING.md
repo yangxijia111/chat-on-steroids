@@ -1,9 +1,10 @@
 # Security Hardening Review — `security-hardening` branch
 
-This is the final deliverable of the systematic security hardening pass described in
-`docs/THREAT-MODEL.md`. Sections follow the requested review format: architecture,
-threat model, findings, new security architecture, code changes, tests, remaining
-risks, breaking changes and recommended defaults.
+This is the deliverable of the systematic security hardening pass described in
+`docs/THREAT-MODEL.md`: Phase 1 (§§1-9) and the Phase 2 second-iteration pass (§10-12).
+Sections follow the requested review format: architecture, threat model, findings, new
+security architecture, code changes, tests, remaining risks, breaking changes and
+recommended defaults.
 
 ## 1. Architecture (post-hardening)
 
@@ -255,3 +256,114 @@ Behavioural changes an existing user will notice, all deliberate:
 - For unattended overnight Loop runs, consider tightening the budget before
   arming the loop.
 - Keep `readOnly: true` for exploring an unfamiliar repository.
+
+---
+
+## 10. Phase 2 — second hardening iteration
+
+Phase 2 addresses the tier of gaps Phase 1's decision model could not express
+(`docs/THREAT-MODEL.md` §4, findings P2-1…P2-10). The uniform decision model is now:
+
+```text
+Principal + Workspace Trust + Capability + Tool descriptor + Shell classification
++ Approval policy + Automation budget
+```
+
+enforced in `kernel.dispatch` / `checkToolPolicy` and the execution modules — never in
+prompt text, never as `if (tool === 'xxx')` special cases.
+
+### What changed
+
+| Area | Change |
+|------|--------|
+| Shell level 1 | Strictly near-read-only: read-only git queries, file reads, version checks. `project-code-execution` (npm test/ci/run, npx, node -e/scripts, pytest, vitest, jest, make/ninja/msbuild, cargo/go/dotnet, cmake --build, tsc, RunUAT/Unity, wrapper shells) is refused at level 1 and additionally gated by workspace trust. |
+| Workspace trust | New `security.workspaceTrust` (`untrusted \| trusted \| full`, default `trusted` to preserve existing behaviour). `untrusted` refuses the project-code-execution category at *any* shell level, including `write_stdin` into a live shell — building a hostile repository runs code its authors left in it. |
+| git hardening | `-c` config injection (case-sensitive `-c`, not `-C`), `--exec-path`, `--paginate`, `--ext-diff`, `--textconv` downgrade git commands out of the level-1 allowlist (`git-unsafe-extension`, medium). Exec children get `GIT_PAGER=cat`, `PAGER=cat`, `GIT_EDITOR=:`. |
+| Tool descriptors | `src/main/security/tool-descriptors.ts` — one `ToolSecurityDescriptor` table (capabilities, risk, network, filesystem, processExecution, desktopControl, workerPolicy) for core *and* plugin tools. `descriptorFor()` returns a fail-closed `UNKNOWN_TOOL_DESCRIPTOR` for unlisted names; restricted workers are denied plugin tools by default; plugin self-reported annotations are not a security boundary. A coverage test walks the core/desktop surface tool lists so new tools must register a descriptor. |
+| Critical approval | `src/main/security/approval.ts` — credential access, privilege escalation, destructive system operations, persistence, obfuscated commands, download-and-execute and security software changes (new `security-software` critical category) require an Electron dialog (Allow once / Allow for session / Deny) even at shell level 3. No window / dialog failure / 120 s timeout ⇒ Deny. Session approvals cache by tool+category+rule; concurrent identical requests share one prompt; every decision is audited. |
+| Desktop fail-closed | Allowlist matching is exact executable basename or exact full path (case/slash-normalised string equality) — no prefix matching. With an allowlist configured, input/capture/launch refuse unconfirmable targets (no window id, unresolvable window, missing process name). Windows refuses windowless/unresolvable calls in restricted mode; macOS gates `launch_app` and probes the active window for focusless input batches in restricted mode (the no-probe contract is preserved when no allowlist is set). |
+| Run-level budget | Budget scope is `run:<runId>` for swarm conversations — prime and every worker share one counter, and a worker cannot escape it by opening a new conversation (armed detection includes the prime's goal switch). Standalone Goal/Loop chats use `conv:<id>`. New dimensions: `maxWorkerSpawnsPerRun`, `maxDesktopActionsPerRun`, `maxFileWritesPerRun` (from tool descriptors) alongside tool calls, execs and runtime. |
+| Security UI | New Security tab: shell level, workspace trust, level-1 prefix list, worker permissions, desktop allowlist, the six budget numbers and the audit switch, saved through the validated `settings:save` security section with the same three-way merge as every other group. Presets: **Safe** (level 1, untrusted, tight budget), **Development** (level 2, trusted — the highlighted recommendation), **Full Automation** (level 3, full, inherit, wide budget — never the default). |
+| Audit wiring | `recordSecurityAudit` reads `security.auditLog` from the live config on every entry; `initAuditLog` no longer snapshots it (it runs before `loadConfig()`). `auditLog: false` now survives restarts and runtime changes apply immediately. |
+| Bridge pairing | Pairing is desktop-initiated: `bridge:startPairing` mints a one-time 256-bit code (5-minute TTL, consumed on success) shown in Setup; the extension popup gains a code field (visible only when the app answers `pairing_required`) and latches its automatic retry off until a code arrives. `/pair` requires an explicit Origin; the first successful pairing pins that extension's origin and different extensions are refused until Disconnect clears the token latch, the pin and any in-flight code together. Bridge protocol 14. |
+| IPC frame gate | Handlers require `event.senderFrame === event.sender.mainFrame` and `senderFrame.url === ` the URL the live main window's main frame loaded. Unknown/nested/navigated frames deny with the same `Untrusted IPC sender` reply. |
+| CI gates | `security-audit` job runs `scripts/audit-production.mjs` (`npm audit --omit=dev`, high+, exceptions must be recorded with GHSA id and reason — currently only the documented sharp 0.35.3 libheif pin). CodeQL (`security-extended`, secret detection included) on push/PR/weekly. Dependency Review on PRs (fails on high+). GitHub push-protection secret scanning is a repository setting to enable (free for public repos). |
+
+### Phase 2 module map
+
+| Module | Role |
+|--------|------|
+| `security/tool-descriptors.ts` | **New** — the single tool security metadata table; fail-closed for unknown names |
+| `security/approval.ts` | **New** — local human confirmation for the seven critical categories |
+| `security/shell-policy.ts` | Level-1 near-read-only allowlist, `project-code-execution`, `git-unsafe-extension`, `security-software` |
+| `security/policy.ts` | Workspace-trust gate, descriptor-driven worker degradation, critical-approval verdicts, run-scoped budget charges |
+| `security/loop-budget.ts` | Run aggregation (`run:`/`conv:` scopes), spawn/desktop/write dimensions |
+| `security/desktop-gate.ts` | Exact allowlist matching, fail-closed unknown targets |
+| `security/audit.ts` | Live-switch reading (no startup cache) |
+| `renderer/security.ts` + Security tab | Settings UI with presets |
+| `extension/{background,popup}.{js,html}` | Protocol 14: popup code field, needs-code latch, code-carrying pair message |
+
+## 11. Phase 2 tests
+
+New/extended suites (all green alongside the existing 1,100+ tests):
+
+- `security-shell-policy.test.ts` — level-1 read-only matrix, project-code-execution
+  classification (25+ commands incl. `node -e`, `npx`, `npm ci`, `make`, `msbuild`,
+  `pytest`, `RunUAT.bat`, `tsc`, wrapper shells), git unsafe extensions (`-c` vs `-C`,
+  `--ext-diff`, `--textconv`, `--paginate`, `--exec-path`) and their safe counterparts,
+  security-software criticals.
+- `security-policy.test.ts` — workspace-trust gate across shell levels and `write_stdin`.
+- `security-tool-descriptors.test.ts` — core/desktop surface coverage, fail-closed
+  unknown names, plugin tools denied for restricted workers, inherit opt-out.
+- `security-approval.test.ts` — the seven categories request approval at level 3,
+  high-but-not-critical passes without one, deny/once/session semantics, rule-keyed
+  session cache, fail-closed on missing window/prompt failure, concurrent de-duplication.
+- `security-env-desktop.test.ts` — exact-match allowlist (prefix no longer matches),
+  path-entry matching, unknown-target refusal in restricted mode.
+- `security-loop-budget.test.ts` — run-scope sharing (prime + workers, new-conversation
+  escape closed), spawn/desktop/write exhaustion, scope mapping.
+- `security-audit.test.ts` — auditLog switch read live (runtime off/on).
+- `security-settings-ui.test.ts` — paints/reads every control, presets write the ladder,
+  clamping, dirty-field guard, save entry point.
+- `bridge.test.ts` — pairing_required / pairing_invalid / replay / no-Origin / pinned
+  origin / Disconnect-clears-pin; extension protocol-14 metadata and popup code-field
+  assertions.
+- `ipc.test.ts` — nested frame, rogue main-frame URL, missing senderFrame all refused;
+  trusted renderer path intact.
+
+## 12. Remaining risks after Phase 2 (honest list)
+
+Phase 1 residuals (§7) mostly stand; updated status first, then the new ones.
+
+1. **Classifier is heuristic, not a parser** (unchanged). Novel encodings at level 3
+   still reach the approval dialog rather than being auto-classified — which is now a
+   human decision point instead of silent execution, but the *classification* itself can
+   still miss.
+2. **Plugin processes still run as the OS user.** The restricted-worker gate now refuses
+   plugin tools, but a *prime* chat calling a plugin still executes third-party code with
+   full user rights. OS-level isolation (job objects / seatbelt) remains the upstream
+   architecture change.
+3. **Bridge pairing pins one extension id.** A user who legitimately switches browsers
+   or reloads the extension as a different id must Disconnect and re-pair. The code is
+   shown in the app and typed in the popup — shoulder-surfing on a shared screen is a
+   (thin) new surface; the 5-minute TTL and one-time use bound it.
+4. **Desktop allowlist is opt-in.** Without a configured allowlist, unresolvable desktop
+   targets still fall through to the native layer's consistency checks (preserves
+   existing behaviour); sensitive-app denial still applies whenever the process name is
+   known. macOS focusless input stays unprobed in the unrestricted mode (documented
+   Phase 1 residual).
+5. **Run-level budget is in-memory.** A crash mid-run resets the counters (armed goal
+   switches survive; the spent budget does not). A hostile loop that can crash the app
+   could restart its budget — but crashing the app also kills the loop's tool access
+   until re-arm, which requires the durable switch.
+6. **Approval dialog timeouts deny, but the dialog itself can linger** if the user never
+   answers; the tool result is already a refusal after 120 s and the stale dialog click
+   is discarded (audited as the decision it produced).
+7. **Update chain / tunnel binary / sharp 0.35.3 pin** — unchanged from §7.5-§7.7; the
+   sharp exception is the single recorded entry the CI audit gate acknowledges.
+8. **Workspace trust is a global setting, not per-root.** `untrusted` is meant for the
+   "examining an unfamiliar repository" session; the natural follow-up is per-root trust
+   recorded when a folder is approved.
+9. **`workspaceTrust` defaults to `trusted`** (compatibility with level-2 installs where
+   `npm test` already worked). Fail-closed would break every existing user's build on
+   upgrade; the Safe preset and the untrusted option are the expressed tightening path.
