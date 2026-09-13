@@ -77,7 +77,7 @@ Chat On Steroids（CoS）是一个 Electron 桌面应用 + Chrome 伴侣扩展�
 | Node.js | 20.19+ 或 22.12+（构建工具链 Vite 7 的要求） |
 | 包管理器 | npm（仓库内含 `package-lock.json`，请使用 `npm ci`） |
 
-> 安装包说明：上游发布的安装包目前为未签名 beta（Windows 未做发布者签名，macOS 未公证），请对照 Release 中的校验和验证。Linux 需要 Secret Service 密钥环服务，推荐使用 DEB 包。
+> 安装包说明：上游发布的安装包目前为未签名 beta（Windows 未做发布者签名，macOS 未公证），请对照 Release 中的校验和验证。Linux 需要 Secret Service 密钥环服务，推荐使用 DEB 包；当系统禁用非特权用户命名空间（unprivileged user namespaces）时，AppImage 启动器可回退到 `--no-sandbox` 运行。
 
 ### 📦 安装与配置
 
@@ -254,7 +254,7 @@ Chat On Steroids (CoS) is an Electron desktop app plus a companion Chrome extens
 | Node.js | 20.19+ or 22.12+ (required by the Vite 7 build toolchain) |
 | Package manager | npm (`package-lock.json` is committed — use `npm ci`) |
 
-> Release notes: upstream binaries are unsigned beta builds (Windows is not publisher-signed; macOS is unsigned and unnotarized) — verify against the release checksums. Linux requires a Secret Service keyring; the DEB is preferred.
+> Release notes: upstream binaries are unsigned beta builds (Windows is not publisher-signed; macOS is unsigned and unnotarized) — verify against the release checksums. Linux requires a Secret Service keyring; the DEB is preferred. When unprivileged user namespaces are disabled, the AppImage launcher can fall back to `--no-sandbox`.
 
 ### 📦 Installation
 
