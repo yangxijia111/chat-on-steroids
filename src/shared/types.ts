@@ -345,11 +345,14 @@ export interface SecuritySettings {
   workerPermissions: 'restricted' | 'inherit';
   /** 桌面控制应用白名单；空 = 不限制（敏感应用硬拒绝始终生效）。 */
   desktopAppAllowlist: string[];
-  /** Goal/Loop 自动运行的安全预算。 */
+  /** Goal/Loop 自动运行的安全预算（按 automation/swarm run 聚合：Prime 与所有 Worker 共用）。 */
   loopBudget: {
     enabled: boolean;
     maxToolCallsPerRun: number;
     maxExecPerRun: number;
+    maxWorkerSpawnsPerRun: number;
+    maxDesktopActionsPerRun: number;
+    maxFileWritesPerRun: number;
     maxRuntimeMinutes: number;
   };
   /** 是否写入安全审计日志（security/audit.jsonl）。 */

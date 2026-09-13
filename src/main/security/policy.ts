@@ -17,9 +17,8 @@
 
 import { getConfig } from '../config.js';
 import { agentInfoForOwnedConversation, PRIME_ID } from '../agents.js';
-import { goalArmedFor } from '../goal.js';
 import { classifyShellCommand, shellLevelAllows, shellLevelRefusal, type ShellClassification } from './shell-policy.js';
-import { chargeLoopBudget, loopBudgetOf, retireBudgetIfIdle, resetLoopBudgetForTests } from './loop-budget.js';
+import { chargeLoopBudget, loopBudgetOf, budgetScopeFor, retireBudgetIfIdle, resetLoopBudgetForTests } from './loop-budget.js';
 import { recordSecurityAudit, type AuditDecision, type AuditRiskLevel } from './audit.js';
 import { descriptorFor, hasExplicitDescriptor } from './tool-descriptors.js';
 
@@ -109,16 +108,28 @@ export function checkToolPolicy(context: PolicyCheckContext): PolicyVerdict {
   const config = getConfig();
   const security = config.security;
 
-  // ---- Goal/Loop 预算（armed 期间才计数；关闭即清零）
-  if (context.conversationId && goalArmedFor(context.conversationId)) {
+  // ---- Goal/Loop 预算（按 automation/swarm run 聚合；armed 期间才计数；关闭即清零）
+  const budgetScope = budgetScopeFor(context.conversationId);
+  if (budgetScope.armed) {
+    const descriptor = descriptorFor(context.tool);
     const isExec = context.tool === 'exec_command' || context.tool === 'write_stdin';
-    const exhausted = chargeLoopBudget(context.conversationId, isExec, loopBudgetOf());
+    const isSpawn = context.tool === 'agents' && (context.args as { action?: unknown } | null)?.['action'] === 'spawn';
+    const exhausted = chargeLoopBudget(
+      budgetScope.key,
+      {
+        exec: isExec,
+        workerSpawn: isSpawn,
+        desktopAction: descriptor.desktopControl === true,
+        fileWrite: descriptor.filesystem === 'write'
+      },
+      loopBudgetOf()
+    );
     if (exhausted) {
       audit(context, isExec ? 'shell.execute' : 'tool.call', null, 'high', 'denied-budget', exhausted.slice(0, 160));
       return { allowed: false, refusal: exhausted };
     }
   } else {
-    retireBudgetIfIdle(context.conversationId);
+    retireBudgetIfIdle(budgetScope.key);
   }
 
   // ---- Worker 权限降级（按工具安全描述符，Core 与 Plugin 同一套）

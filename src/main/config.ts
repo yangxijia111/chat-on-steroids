@@ -150,6 +150,9 @@ const DEFAULT_SECURITY: SecuritySettings = {
     enabled: true,
     maxToolCallsPerRun: 800,
     maxExecPerRun: 200,
+    maxWorkerSpawnsPerRun: 16,
+    maxDesktopActionsPerRun: 800,
+    maxFileWritesPerRun: 2000,
     maxRuntimeMinutes: 240
   },
   auditLog: true
@@ -492,6 +495,9 @@ const configSchema = z.object({
           enabled: z.boolean().optional().default(DEFAULT_SECURITY.loopBudget.enabled),
           maxToolCallsPerRun: z.number().int().min(10).max(100_000).optional().default(DEFAULT_SECURITY.loopBudget.maxToolCallsPerRun),
           maxExecPerRun: z.number().int().min(1).max(10_000).optional().default(DEFAULT_SECURITY.loopBudget.maxExecPerRun),
+          maxWorkerSpawnsPerRun: z.number().int().min(0).max(1_000).optional().default(DEFAULT_SECURITY.loopBudget.maxWorkerSpawnsPerRun),
+          maxDesktopActionsPerRun: z.number().int().min(1).max(100_000).optional().default(DEFAULT_SECURITY.loopBudget.maxDesktopActionsPerRun),
+          maxFileWritesPerRun: z.number().int().min(1).max(100_000).optional().default(DEFAULT_SECURITY.loopBudget.maxFileWritesPerRun),
           maxRuntimeMinutes: z.number().int().min(1).max(10_080).optional().default(DEFAULT_SECURITY.loopBudget.maxRuntimeMinutes)
         })
         .optional()
