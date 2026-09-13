@@ -29,11 +29,14 @@ jobs:
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
-      - uses: github/codeql-action/init@f2f72e3102ffc16b7e869075f9c8e55e512f074e # v4
+      # Pin the commit behind the moving `v4` tag (v4.38.0). The previous SHA did not
+      # exist in github/codeql-action, so this whole security gate failed to resolve
+      # before a single line was analysed.
+      - uses: github/codeql-action/init@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4
         with:
           languages: javascript-typescript
           queries: security-extended
 
-      - uses: github/codeql-action/analyze@f2f72e3102ffc16b7e869075f9c8e55e512f074e # v4
+      - uses: github/codeql-action/analyze@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4
         with:
           category: '/language:javascript-typescript'
