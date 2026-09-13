@@ -684,14 +684,15 @@ async function dispatchTracked(
   }
   let handlerRan = false;
   markTiming('identity');
-  // 安全策略总闸（docs/THREAT-MODEL.md）：shell 分级、worker 降级、loop 预算。
-  // 在实际执行代码层拒绝，与提示词无关；拒绝文案面向模型给出可执行的下一步。
+  // 安全策略总闸（docs/THREAT-MODEL.md）：shell 分级、工作区信任、worker 降级、
+  // loop 预算。在实际执行代码层拒绝，与提示词无关；拒绝文案面向模型给出可执行的下一步。
   const policy = checkToolPolicy({
     tool: name,
     args,
     conversationId: context.caller.conversationId,
     sessionId: context.caller.sessionId ?? null,
-    agent: context.agent
+    agent: context.agent,
+    surface
   });
   const invokeHandler = (): Promise<ToolResult> => {
     handlerRan = true;

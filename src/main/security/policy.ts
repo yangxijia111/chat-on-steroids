@@ -21,8 +21,7 @@ import { goalArmedFor } from '../goal.js';
 import { classifyShellCommand, shellLevelAllows, shellLevelRefusal, type ShellClassification } from './shell-policy.js';
 import { chargeLoopBudget, loopBudgetOf, retireBudgetIfIdle, resetLoopBudgetForTests } from './loop-budget.js';
 import { recordSecurityAudit, type AuditDecision, type AuditRiskLevel } from './audit.js';
-import type { Capability } from '../../shared/types.js';
-import { WINDOWS_COMPUTER_READ_METHODS, WINDOWS_COMPUTER_INPUT_METHODS } from '../../shared/windows-computer.js';
+import { descriptorFor, hasExplicitDescriptor } from './tool-descriptors.js';
 
 export interface PolicyCheckContext {
   tool: string;
@@ -30,6 +29,8 @@ export interface PolicyCheckContext {
   conversationId: string | null;
   sessionId: string | null;
   agent: string | null;
+  /** 调用所在 surface（core/desktop/plugins）；plugin 工具名不在核心描述符表内。 */
+  surface?: string | null;
 }
 
 export interface PolicyVerdict {
@@ -37,33 +38,14 @@ export interface PolicyVerdict {
   refusal: string | null;
 }
 
-/** 工具 → 所需 capability（反向映射，供 worker 降级判断）。 */
-const TOOL_CAPABILITY: ReadonlyMap<string, Capability> = (() => {
-  const map = new Map<string, Capability>();
-  map.set('read', 'read');
-  map.set('view_image', 'read');
-  map.set('find', 'search');
-  map.set('apply_patch', 'edit');
-  map.set('exec_command', 'command');
-  map.set('write_stdin', 'command');
-  map.set('download_artifact', 'saveArtifact');
-  map.set('observe', 'screen');
-  map.set('computer', 'control');
-  for (const method of WINDOWS_COMPUTER_READ_METHODS) map.set(method, 'screen');
-  for (const method of WINDOWS_COMPUTER_INPUT_METHODS) map.set(method, 'control');
-  map.set('read_clipboard', 'clipboardRead');
-  map.set('write_clipboard', 'clipboardWrite');
-  return map;
-})();
-
-/** restricted 模式下 worker 禁止的 capability：一切写入、执行与桌面能力。 */
-const WORKER_DENIED_CAPABILITIES: ReadonlySet<Capability> = new Set([
-  'create', 'edit', 'move', 'deleteFile', 'command', 'saveArtifact',
-  'screen', 'control', 'clipboardRead', 'clipboardWrite'
-]);
-
-// 说明：agents / session_finish / update_plan / session 等工具没有 capability 映射，
-// 不在降级范围内 —— worker 必须能上报状态与协作，这些工具本身不触达文件/执行/桌面。
+// 工具安全元数据统一在 ./tool-descriptors.ts（Core 与 Plugin 同一套）：
+// capability 需求、风险、文件/网络/执行/桌面能力面与 worker 策略都在描述符里，
+// 本文件只按描述符决策，不再维护「工具名 → capability」特判表。
+//
+// 说明：agents / session_finish / update_plan / session 等协作工具的描述符
+// workerPolicy = allow —— worker 必须能上报状态与协作，这些工具不触达文件/
+// 执行/桌面。第三方 plugin 工具名不在描述符表内，descriptorFor 对其返回
+// fail-closed 的 UNKNOWN_TOOL_DESCRIPTOR（restricted worker 一律拒绝）。
 
 /** 这次调用是否来自 worker（会话归属为据，agent id 形态为辅）。 */
 function isWorkerCall(context: PolicyCheckContext): boolean {
@@ -137,11 +119,21 @@ export function checkToolPolicy(context: PolicyCheckContext): PolicyVerdict {
     retireBudgetIfIdle(context.conversationId);
   }
 
-  // ---- Worker 权限降级
+  // ---- Worker 权限降级（按工具安全描述符，Core 与 Plugin 同一套）
   if (security?.workerPermissions === 'restricted' && isWorkerCall(context)) {
-    const capability = TOOL_CAPABILITY.get(context.tool);
-    if (capability !== undefined && WORKER_DENIED_CAPABILITIES.has(capability)) {
-      audit(context, 'tool.call', context.tool, 'medium', 'denied-worker-permission', `worker needs ${capability}; workers run restricted by default`);
+    const descriptor = descriptorFor(context.tool);
+    if (descriptor.workerPolicy === 'deny') {
+      const unknown = !hasExplicitDescriptor(context.tool);
+      audit(
+        context,
+        'tool.call',
+        context.tool,
+        descriptor.risk,
+        'denied-worker-permission',
+        unknown
+          ? 'plugin/unknown tool has no explicit security descriptor; workers run restricted by default'
+          : `tool requires ${descriptor.capabilities.join(', ') || 'execute/write/desktop'} capability; workers run restricted by default`
+      );
       return {
         allowed: false,
         refusal:
