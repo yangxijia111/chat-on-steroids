@@ -20,6 +20,11 @@ resources/
 .DS_Store
 Thumbs.db
 
+# IDE project state. Machine-specific; never publish (add a narrower
+# `!.vscode/settings.json` here if shared editor settings are ever wanted).
+.idea/
+.vscode/
+
 # Internal working notes and forensic audits. Kept locally, not published:
 # they are a detailed map of unfixed weaknesses in a tool that runs commands
 # on the user's machine. Architecture lives in AGENTS.md instead.
