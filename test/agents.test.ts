@@ -11,6 +11,7 @@ import http from 'node:http';
 import { promises as fs } from 'node:fs';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Caller } from '../src/main/agents.js';
+import { setApprovalPromptForTests } from '../src/main/security/approval.js';
 import * as chatModels from '../src/main/chat-models.js';
 
 vi.mock('electron', () => ({
@@ -2582,6 +2583,9 @@ describe('through the MCP endpoint', () => {
     const execution = vi.spyOn(unifiedExecManager, 'execCommand').mockResolvedValue({ chunkId: 'shutdown-test', wallTimeMs: 0,
       rawOutput: Buffer.from('shutdown intercepted'), truncationPolicy: { kind: 'tokens', tokens: 1000 },
       maxOutputTokens: 1000, processId: null, exitCode: 0, originalTokenCount: null, outputOmittedBytes: null });
+    // 本测试考察的是 unattributed 身份边界而非 critical 确认：shutdown 探针属于
+    // destructive 类，注入 allow-once 以保持与加固前相同的执行路径。
+    setApprovalPromptForTests(async () => 'allow-once');
     try {
       const args = { cmd: 'shutdown.exe /s /t 0', workdir: '/probe' };
       const reply = await callTool('exec_command', args);
@@ -2596,7 +2600,7 @@ describe('through the MCP endpoint', () => {
         expect(reply).toContain('CALLER_IDENTITY_REQUIRED');
         expect(execution).not.toHaveBeenCalled();
       }
-    } finally { execution.mockRestore(); allocation.mockRestore(); await setEnabled(true); }
+    } finally { setApprovalPromptForTests(null); execution.mockRestore(); allocation.mockRestore(); await setEnabled(true); }
   });
 
   it('waits for late exact identity while dormant worker histories exist, then revives that worker', async () => {
