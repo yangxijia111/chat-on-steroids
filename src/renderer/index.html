@@ -630,8 +630,9 @@
                   <h3>Add the Chrome extension</h3>
                   <p>
                     Open <code>chrome://extensions</code>, turn on <strong>Developer mode</strong>,
-                    choose <strong>Load unpacked</strong> and pick the folder the button opens. It
-                    pairs with this app by itself — there is no code to type.
+                    choose <strong>Load unpacked</strong> and pick the folder the button opens. Then
+                    press <strong>Start pairing</strong> here and enter the one-time code in the
+                    extension popup (Advanced → the code field).
                   </p>
                   <p class="hint is-required">
                     <strong>Required for sub-agents:</strong> the companion extension must be loaded
@@ -649,9 +650,11 @@
                     >
                       <svg class="ico" viewBox="0 0 24 24"><use href="#i-out" /></svg>Download extension ZIP
                     </button>
+                    <button class="btn btn-solid" id="bridgePair" type="button">Start pairing</button>
                     <button class="btn" id="bridgeUnpair" type="button">Disconnect browser</button>
                     <span class="chosen" id="bridgeState"></span>
                   </div>
+                  <p class="hint" id="bridgePairCode" hidden></p>
                   <p class="hint" id="extensionPath"></p>
                 </div>
               </li>

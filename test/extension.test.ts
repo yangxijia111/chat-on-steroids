@@ -39,8 +39,8 @@ describe('extension release metadata', () => {
     expect(lock.version).toBe(APP_VERSION);
     expect(lock.packages?.['']?.version).toBe(APP_VERSION);
     expect(manifest.version).toBe(APP_VERSION);
-    expect(BRIDGE_PROTOCOL).toBe(13);
-    expect(backgroundSource).toContain('const BRIDGE_PROTOCOL = 13;');
+    expect(BRIDGE_PROTOCOL).toBe(14);
+    expect(backgroundSource).toContain('const BRIDGE_PROTOCOL = 14;');
   });
 
   /**
@@ -89,23 +89,22 @@ describe('extension release metadata', () => {
   });
 
   /**
-   * The installed popup showed "Paired · port 8765" with a green dot and, underneath it,
-   * a six-digit code field and a Pair button — a page contradicting itself about the one
-   * thing it exists to report. There is nothing to type any more, so the way to keep that
-   * from coming back is for the markup to have no field to type into.
+   * Protocol 14 brought desktop-initiated pairing back: the popup has exactly one code
+   * field, hidden until the app answers pairing_required, and no form / six-digit shape.
+   * The field must never be visible while the bridge is ready, and the pair message must
+   * carry the code only from the explicit Connect control.
    */
-  it('has no pairing-code UI anywhere in the popup', async () => {
+  it('keeps the one-time pairing field hidden by default and out of any form', async () => {
     const dir = path.join(process.cwd(), 'extension');
     const [html, js] = await Promise.all([
       fs.readFile(path.join(dir, 'popup.html'), 'utf8'),
       fs.readFile(path.join(dir, 'popup.js'), 'utf8')
     ]);
     expect(html).not.toMatch(/<form/i);
-    expect(html).not.toMatch(/000000|six[- ]digit|pairing code/i);
-    expect(html).not.toMatch(/type=["'](?:text|number|password)["']/i);
-    expect(js).not.toMatch(/\bcode\b/);
-    // The message the worker understands carries no code either.
-    expect(js).not.toMatch(/type: 'pair'[^}]*code/);
+    expect(html).not.toMatch(/000000|six[- ]digit/i);
+    expect(html).toMatch(/<input id="pairCode"[^>]*hidden/);
+    expect(js).toContain("field.hidden = !needsCode || ready || incompatible;");
+    expect(js).toMatch(/type: 'pair', code: \$\('pairCode'\)\.value\.trim\(\)/);
   });
 
   it('ships Overwrite on by default and exposes one persistent toggle that refreshes immediately', async () => {

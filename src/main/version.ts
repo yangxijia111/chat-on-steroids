@@ -65,5 +65,8 @@ export function extensionDownloadUrl(version = APP_VERSION): string {
  *      which is exactly the silent failure this fence exists to turn into a 426.
  */
 // 13 — native file attachments require exact claimed-input chunk delivery and final
-// draft ownership. A 12 companion would silently send text without these files.
-export const BRIDGE_PROTOCOL = 13;
+//      draft ownership. A 12 companion would silently send text without these files.
+// 14 — pairing requires a one-time code started from the app (desktop-initiated pairing,
+//      5-minute nonce) and the paired extension origin is pinned. A 13 companion tries to
+//      provision silently and gets 403 pairing_required forever, so the fence must move.
+export const BRIDGE_PROTOCOL = 14;

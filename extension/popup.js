@@ -227,6 +227,13 @@ function paintHeader(status) {
   $('retryBtn').hidden = ready || incompatible;
   $('retryBtn').textContent = off ? 'Connect' : 'Try again';
   $('unpairBtn').hidden = !paired || incompatible;
+  // The app pairs only with a one-time code started from its own UI; offer the field as
+  // soon as the last pairing attempt said so, and keep whatever the user has typed.
+  const needsCode = !!(status && status.pairError && typeof status.pairError.error === 'string'
+    && status.pairError.error.indexOf('pairing_') === 0);
+  const field = $('pairCode');
+  field.hidden = !needsCode || ready || incompatible;
+  if (!needsCode) field.value = '';
   return ready;
 }
 
@@ -404,7 +411,7 @@ $('reloadBtn').addEventListener('click', () => {
 
 $('retryBtn').addEventListener('click', async () => {
   $('retryBtn').disabled = true;
-  await chrome.runtime.sendMessage({ type: 'pair' });
+  await chrome.runtime.sendMessage({ type: 'pair', code: $('pairCode').value.trim() });
   $('retryBtn').disabled = false;
   await refresh();
 });

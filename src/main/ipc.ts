@@ -62,6 +62,7 @@ import {
   sessionControlsFor, stopSessionTurn, setSessionAutomation, setSessionObjective, compactSession, cancelSessionCompaction,
   cancelWorkerCommands,
   chatUrl,
+  beginPairing,
   onBridgeChange,
   startBridge,
   stopBridge,
@@ -995,8 +996,13 @@ export function registerIpc(getWindow: () => BrowserWindow | null, quitToInstall
   // ---------------------------------------------------------------- bridge
 
   handle('bridge:unpair', async () => {
-    await unpair();
-    return buildState();
+    await unpair();    return buildState();
+  });
+
+  // 二阶段 P2：桌面端主动开始配对——签发一次性 code（5 分钟 TTL），UI 展示给
+  // 用户输入扩展 popup。无 code 的 /pair 一律 403。
+  handle('bridge:startPairing', async () => {
+    return beginPairing();
   });
 
   handle('bridge:downloadExtension', async () => {

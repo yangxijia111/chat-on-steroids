@@ -75,6 +75,7 @@ const {
   WORKER_REDEEM_MS,
   BROWSER_RECOVERY_COOLDOWN_MS,
   DEFAULT_PORTS,
+  beginPairing,
   startBridge,
   stopBridge,
   sweepStaleSwarm,
@@ -304,7 +305,10 @@ async function redeem(id?: string, client = 'tab-1'): Promise<any> {
 let suiteConfig: Config;
 
 async function pair(): Promise<string> {
-  const reply = await request('POST', '/pair', { auth: null });
+  // 二阶段 P2：配对由桌面端开始（beginPairing 签发一次性 code），/pair 必须带
+  // 显式 Origin（request 辅助的默认值）与该 code。
+  const { code } = beginPairing();
+  const reply = await request('POST', '/pair', { auth: null, body: { code } });
   expect(reply.status).toBe(200);
   token = reply.body.token as string;
   return token;
@@ -357,6 +361,8 @@ beforeEach(async () => {
   writeDurableSoon('bridge-commands', null);
   await flushDurable();
   await setSecret('bridgeToken', '');
+  // 配对钉扎与在途 pairing code 同属配对状态，逐测试隔离（成功配对重新钉扎）。
+  await setSecret('bridgePinnedOrigin', '');
   token = null;
 });
 
@@ -438,12 +444,54 @@ describe('who is allowed to talk to it', () => {
 // -------------------------------------------------------------- provisioning
 
 describe('provisioning', () => {
-  it('issues a token to the extension with nothing for the user to type', async () => {
-    const reply = await request('POST', '/pair', { auth: null });
+  it('issues a token to the extension only with a one-time code started from the app', async () => {
+    const noCode = await request('POST', '/pair', { auth: null });
+    expect(noCode.status).toBe(403);
+    expect(noCode.body.error).toBe('pairing_required');
+    const { code } = beginPairing();
+    const reply = await request('POST', '/pair', { auth: null, body: { code } });
     expect(reply.status).toBe(200);
     expect(reply.body.token).toMatch(/^[A-Za-z0-9_-]{32,}$/);
     const hello = await request('GET', '/hello', { auth: null });
     expect(hello.body.paired).toBe(true);
+  });
+
+  it('rejects a wrong or reused pairing code', async () => {
+    const { code } = beginPairing();
+    const wrong = await request('POST', '/pair', { auth: null, body: { code: 'not-the-code' } });
+    expect(wrong.status).toBe(403);
+    expect(wrong.body.error).toBe('pairing_invalid');
+    const first = await request('POST', '/pair', { auth: null, body: { code } });
+    expect(first.status).toBe(200);
+    // code 一次性：同一 code 再用即失效。
+    const replay = await request('POST', '/pair', { auth: null, body: { code } });
+    expect(replay.status).toBe(403);
+    expect(replay.body.error).toBe('pairing_required');
+  });
+
+  it('refuses a /pair request that carries no Origin at all', async () => {
+    const { code } = beginPairing();
+    const reply = await request('POST', '/pair', { origin: null, auth: null, body: { code } });
+    expect(reply.status).toBe(403);
+    expect(reply.body.error).toBe('forbidden_origin');
+  });
+
+  it('pins the paired extension origin and refuses a different extension afterwards', async () => {
+    await pair();
+    // 已配对请求继续使用 bearer token（同 origin）。
+    expect((await request('GET', '/status')).status).toBe(200);
+    // 另一个扩展 origin（即使持有同样的 code 路径）在钉扎层被拒绝。
+    const other = 'chrome-extension://zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz';
+    const { code } = beginPairing();
+    const attempt = await request('POST', '/pair', { origin: other, auth: null, body: { code } });
+    expect(attempt.status).toBe(403);
+    expect(attempt.body.error).toBe('forbidden_origin');
+    // Disconnect 清除钉扎后，新扩展可以重新配对。
+    await unpair();
+    const { code: fresh } = beginPairing();
+    const paired = await request('POST', '/pair', { origin: other, auth: null, body: { code: fresh, reconnect: true } });
+    expect(paired.status).toBe(200);
+    token = paired.body.token as string;
   });
 
   it('starts and stays usable while secure storage is unavailable, then pairs after it returns', async () => {
@@ -457,7 +505,8 @@ describe('provisioning', () => {
     const hello = await request('GET', '/hello', { auth: null });
     expect(hello.status).toBe(200);
     expect(hello.body.paired).toBe(false);
-    const reply = await request('POST', '/pair', { auth: null });
+    const { code: unavailableCode } = beginPairing();
+    const reply = await request('POST', '/pair', { auth: null, body: { code: unavailableCode } });
     expect(reply.status).toBe(503);
     expect(reply.body.error).toBe('secure_storage_unavailable');
     expect(reply.body.message).toMatch(/credential storage/i);
@@ -466,7 +515,7 @@ describe('provisioning', () => {
     // Keychain/Secret Service can become available after login/unlock without the app or bridge
     // restarting. The listener must recover in place rather than being poisoned by the first read.
     vi.mocked(safeStorage.isAsyncEncryptionAvailable).mockResolvedValue(true);
-    const paired = await request('POST', '/pair', { auth: null });
+    const paired = await request('POST', '/pair', { auth: null, body: { code: unavailableCode } });
     expect(paired.status).toBe(200);
     expect(paired.body.token).toMatch(/^[A-Za-z0-9_-]{32,}$/);
     expect((await bridgeStatus()).running).toBe(true);
@@ -504,9 +553,11 @@ describe('provisioning', () => {
     // disconnect marker from the encrypted file, the relevant half of an app restart.
     resetSecretsCacheForTests();
 
-    // First-install provisioning is silent, but this browser was deliberately revoked by
-    // the app. A background poll must not be able to turn that revocation into a new token.
-    const silent = await request('POST', '/pair', { auth: null });
+    // First-install provisioning needs the desktop-started code, but this browser was
+    // deliberately revoked by the app. A background poll must not be able to turn that
+    // revocation into a new token.
+    const silentCode = beginPairing();
+    const silent = await request('POST', '/pair', { auth: null, body: { code: silentCode.code } });
     expect(silent.status).toBe(409);
     expect(silent.body.error).toBe('browser_disconnected');
     expect((await request('GET', '/hello', { auth: null })).body).toMatchObject({
@@ -516,7 +567,8 @@ describe('provisioning', () => {
 
     // The extension popup's Connect action is the explicit counterpart. Only that intent
     // clears the durable app-side latch and mints a usable token again.
-    const reconnect = await request('POST', '/pair', { auth: null, body: { reconnect: true } });
+    const { code } = beginPairing();
+    const reconnect = await request('POST', '/pair', { auth: null, body: { reconnect: true, code } });
     expect(reconnect.status).toBe(200);
     token = reconnect.body.token as string;
     expect((await request('GET', '/status')).status).toBe(200);

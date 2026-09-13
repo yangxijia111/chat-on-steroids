@@ -26,6 +26,7 @@ const { APP_VERSION, BRIDGE_PROTOCOL } = await import('../src/main/version.js');
 const { initSecretsPath, setSecret } = await import('../src/main/secrets.js');
 const {
   CHAT_SILENCE_MS,
+  beginPairing,
   resetBridgeForTests,
   shutdownBridge,
   startBridge,
@@ -88,7 +89,8 @@ function request(
 }
 
 async function pair(): Promise<void> {
-  const reply = await request('POST', '/pair', { auth: null });
+  const { code } = beginPairing();
+  const reply = await request('POST', '/pair', { auth: null, body: { code } });
   expect(reply.status).toBe(200);
   token = reply.body.token;
 }

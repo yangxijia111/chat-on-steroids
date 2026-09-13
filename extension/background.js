@@ -40,7 +40,7 @@ const MODEL_REQUEST_TIMEOUT_MS = 190_000;
 /** The reason a deadline aborts with, so it is a fact the caller can act on rather than prose. */
 const TIMED_OUT = 'the app took too long to answer';
 /** Bumped only when the request/response shape changes; the app compares it. */
-const BRIDGE_PROTOCOL = 13;
+const BRIDGE_PROTOCOL = 14;
 
 /**
  * Journal caps. The byte figure is what actually matters — chrome.storage.session has a
@@ -1091,18 +1091,18 @@ async function call(path, init = {}, retried = false) {
 }
 
 /**
- * Gets this browser a bearer token, with nothing for the user to type.
- *
- * There used to be a six-digit code shown in the app and entered in the extension popup.
- * It bought nothing: the only callers that can reach the app at all are already on this
- * machine's loopback interface — the app refuses any web origin outright — so the code
- * was asking the user to prove something the network had already proved. What it did cost
- * was the first-run path, which failed until somebody found the popup.
+ * Gets this browser a bearer token. Since protocol 14 the app pairs only with a one-time
+ * code that the user starts from the app's own UI, so silent provisioning can no longer
+ * mint a token: `needsPairingCode` latches when the app answers pairing_required and stops
+ * the automatic retry loop from hammering /pair. The popup's Connect control passes the
+ * typed code through `pair({code})`, which is the only path that clears the latch.
  *
  * The token itself stays: it is what keeps a second local program from driving the bridge
  * by accident, and it is why the marker in a chat URL is harmless on its own.
  */
-function provision(reconnect = false) {
+let needsPairingCode = false;
+
+function provision(reconnect = false, code = '') {
   // Singleflight. Everything that wants a token waits on the same request: `/pair` mints
   // a fresh credential and invalidates the one before it, so two concurrent callers do
   // not get two tokens, they get one working token and one that has already been revoked.
@@ -1110,8 +1110,12 @@ function provision(reconnect = false) {
   // have happened while it was in flight, and a later explicit Connect must be able to mint
   // under the new intent without waiting for/accepting that stale result.
   const intent = connectionEpoch;
+  if (needsPairingCode && !code) {
+    return Promise.resolve({ ok: false, error: 'pairing_required',
+      message: 'Open the app and press "Start pairing", then enter the one-time code here.' });
+  }
   if (pairing && pairingEpoch === intent && pairingReconnect === reconnect) return pairing;
-  const work = pairOnce(intent, reconnect).then((result) => {
+  const work = pairOnce(intent, reconnect, code).then((result) => {
     pairingError = result && result.ok
       ? null
       : {
@@ -1133,16 +1137,18 @@ function provision(reconnect = false) {
   return tracked;
 }
 
-async function pairOnce(intent = connectionEpoch, reconnect = false) {
+async function pairOnce(intent = connectionEpoch, reconnect = false, code = '') {
   const found = await discover(true);
   if (!found) return { ok: false, error: 'app_not_found' };
   if (found.compatible === false) return { ok: false, error: 'incompatible_extension' };
   try {
+    const payload = reconnect ? { reconnect: true } : {};
+    if (code) payload.code = code;
     const response = await fetchBounded(`http://127.0.0.1:${found.port}/pair`, {
       method: 'POST',
       cache: 'no-store',
       headers: { 'content-type': 'application/json', ...versionHeaders() },
-      body: JSON.stringify(reconnect ? { reconnect: true } : {})
+      body: JSON.stringify(payload)
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok || typeof data.token !== 'string') {
@@ -1150,12 +1156,19 @@ async function pairOnce(intent = connectionEpoch, reconnect = false) {
         await latchAppDisconnect();
         return { ok: false, error: 'disconnected', message: data.message };
       }
+      // Pairing needs a one-time code from the app: latch so the retry loop waits for the
+      // user instead of re-asking every thirty seconds.
+      if (data && typeof data.error === 'string' && data.error.startsWith('pairing_')) {
+        needsPairingCode = true;
+        return { ok: false, error: data.error, message: data.message };
+      }
       return { ok: false, error: data.error || `HTTP ${response.status}`, message: data.message };
     }
     // The response belongs to the connection state that launched it. A newer Disconnect is
     // authoritative and must not be undone just because the network answered out of order.
     if (intent !== connectionEpoch) return { ok: false, error: 'disconnected' };
     token = data.token;
+    needsPairingCode = false;
     // Connecting is the counterpart of disconnecting, and the only thing that clears it.
     disconnected = false;
     await persist();
@@ -2736,13 +2749,17 @@ const HANDLERS = {
       ...(pairingError ? { pairError: pairingError } : {})
     };
   },
-  async pair() {
+  async pair(message) {
     await load();
     // This message exists only behind the popup's Connect/Retry control. Advance the intent
     // generation so an older silent provision already on the wire cannot win after this
     // explicit reconnect, then tell the app this /pair is allowed to clear its durable latch.
+    // The app pairs only with a one-time code started from its own UI (protocol 14): the
+    // popup passes what the user typed; a valid code also lifts the needs-code gate.
     connectionEpoch++;
-    const result = await provision(true);
+    const code = message && typeof message.code === 'string' ? message.code.trim() : '';
+    if (code) needsPairingCode = false;
+    const result = await provision(true, code);
     if (result && result.ok) {
       void drainCommandAcks()
         .then(() => drain())
@@ -2761,6 +2778,7 @@ const HANDLERS = {
     // open tab — provisions a new token and the browser is connected again.
     disconnected = true;
     pairingError = null;
+    needsPairingCode = false;
     await persist();
     return { ok: true };
   },

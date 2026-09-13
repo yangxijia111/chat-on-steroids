@@ -3699,6 +3699,17 @@ export function initChat(next: Deps): void {
     const state = await run(api.unpairExtension());
     if (state) toast('Browser disconnected');
   });
+  // 二阶段 P2：桌面端主动开始配对。code 显示 5 分钟（与 TTL 一致），过期需重新开始。
+  $('bridgePair').addEventListener('click', async () => {
+    const pairing = await run(api.startExtensionPairing());
+    const hint = $('bridgePairCode');
+    if (!pairing) return;
+    hint.hidden = false;
+    hint.textContent =
+      `One-time pairing code (valid for 5 minutes): ${pairing.code} — ` +
+      'open the extension popup, paste it into the code field and press Connect.';
+    window.setTimeout(() => { hint.hidden = true; }, 5 * 60_000);
+  });
   $('bridgeFolder').addEventListener('click', async () => {
     const dir = await run(api.openExtensionFolder());
     if (dir) toast('Extension folder opened');

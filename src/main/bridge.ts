@@ -45,7 +45,7 @@ import { CHAT_SILENCE_MS, CONTINUATION_MARKER, isReasoningEffort, type Reasoning
 import { isChatBlocked, chatBlockedAt } from './session/blocked-chats.js';
 export { CHAT_ACTIVE_MS, CHAT_SILENCE_MS } from '../shared/session.js';
 import { getConfig, updateConfig } from './config.js';
-import { getSecret, secureStorageStatus, setSecret } from './secrets.js';
+import { getSecret, secureStorageStatus, setSecret, clearSecret } from './secrets.js';
 import {
   acceptGoalReplyNow,
   astraFinishOnly,
@@ -603,6 +603,10 @@ function noteBrowserSeen(): boolean {
  *
  * The only remaining manual step in the extension's lifecycle, and it is a revocation
  * rather than a setup: there is nothing to press to connect.
+ *
+ * 二阶段加固：Disconnect 同时清除配对钉扎（pinned extension origin）与在途
+ * pairing nonce —— 旧 token 语义上失效（哨兵标记），配对状态全部归零，下一次
+ * 连接必须重新走「桌面端开始 pairing → 输入一次性 code」的完整流程。
  */
 export async function unpair(): Promise<void> {
   // Clearing the credential is ambiguous: it is also what a fresh install or repaired
@@ -610,9 +614,56 @@ export async function unpair(): Promise<void> {
   // This impossible-as-a-token sentinel preserves the user's explicit intent across both
   // the extension's next poll and an app restart.
   await setSecret('bridgeToken', BROWSER_DISCONNECTED);
+  await clearSecret('bridgePinnedOrigin');
+  pendingPairing = null;
   browserWake?.revoke();
   logInfo('bridge: browser disconnected');
   changed();
+}
+
+// ------------------------------------------------------------------ pairing
+// 二阶段 P2 配对加固（docs/THREAT-MODEL.md）：
+//   1. 配对只能由桌面端用户主动开始（pairing:start IPC → beginPairing）；
+//   2. 每轮配对生成一次性 256-bit nonce，5 分钟 TTL，成功即消耗；
+//   3. /pair 拒绝缺失 Origin 的请求，并在首次成功后钉扎 Chrome Extension ID；
+//   4. 已配对的请求继续使用 bearer token（pinned origin 存在时其他扩展一律 403）；
+//   5. Disconnect 清除 token、钉扎与在途 nonce。
+
+const PAIRING_TTL_MS = 5 * 60_000;
+
+interface PendingPairing {
+  code: string;
+  expiresAt: number;
+}
+
+let pendingPairing: PendingPairing | null = null;
+
+/**
+ * 开始一轮配对：生成一次性 code 并返回给 UI 展示。同一时刻只有一轮活跃，
+ * 重复调用作废上一轮。
+ */
+export function beginPairing(): { code: string; expiresAt: number } {
+  const entry: PendingPairing = {
+    code: randomBytes(32).toString('base64url'),
+    expiresAt: Date.now() + PAIRING_TTL_MS
+  };
+  pendingPairing = entry;
+  logInfo('bridge: pairing started (one-time code issued, 5 minute window)');
+  changed();
+  return { code: entry.code, expiresAt: entry.expiresAt };
+}
+
+function redeemPairingCode(candidate: unknown): 'ok' | 'required' | 'expired' | 'invalid' {
+  if (!pendingPairing) return 'required';
+  if (Date.now() > pendingPairing.expiresAt) {
+    pendingPairing = null;
+    return 'expired';
+  }
+  if (typeof candidate !== 'string' || candidate.length === 0 || !safeEqual(candidate, pendingPairing.code)) {
+    return 'invalid';
+  }
+  pendingPairing = null;
+  return 'ok';
 }
 
 // ------------------------------------------------------------------ helpers
@@ -1349,6 +1400,12 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
 
   if (!originAllowed) return json(res, 403, { error: 'forbidden_origin' }, null);
   if (!hostIsLoopback(req)) return json(res, 403, { error: 'forbidden_host' }, null);
+  // 钉扎层：首次成功配对后只接受同一个 Chrome Extension ID。Origin 缺失时该层
+  // 不单独拒绝（Chrome 对部分已授权请求不带 Origin），但 /pair 自己强制要求。
+  const pinnedOrigin = await getSecret('bridgePinnedOrigin');
+  if (pinnedOrigin && origin && origin !== pinnedOrigin) {
+    return json(res, 403, { error: 'forbidden_origin' }, null);
+  }
 
   noteExtensionVersion(req);
 
@@ -1384,6 +1441,9 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
       );
     }
     if (rateLimited()) return json(res, 429, { error: 'rate_limited' }, origin);
+    // /pair 一律要求显式 Origin：无 Origin 的本地进程（或被剥离 Origin 的请求）
+    // 不允许发起配对（二阶段 P2）。
+    if (!origin) return json(res, 403, { error: 'forbidden_origin' }, null);
     let body: unknown;
     try {
       body = await readBody(req);
@@ -1404,21 +1464,26 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
         origin
       );
     }
-    // Silent provisioning on loopback.
-    //
-    // There used to be a six-digit code here, so the user had to be looking at the app
-    // before a browser could attach. In practice both halves are the same person on the
-    // same machine, installed together, and the code was a step that failed far more
-    // often than it protected anything — the app was unreachable and the user was typing
-    // numbers. The bearer token is still real and still required on every other route; it
-    // is simply issued to whoever asks on 127.0.0.1 rather than to whoever can read the
-    // window. What that gives up is stated plainly: any program already running as this
-    // user can obtain the token, and with it read recorded ChatGPT activity and queue an
-    // "open a fresh chat" command. It can still not read a file, run anything, or change
-    // a permission — the bridge has no route that does. A web page cannot: originOf
-    // refuses anything that is not a chrome-extension:// origin, above.
+    // 二阶段 P2：一次性 pairing code（桌面端 pairing:start 签发，5 分钟 TTL）。
+    // 任何程序都能到达 127.0.0.1，静默发放 token 等于把凭据发给「先到者」；
+    // 现在必须由本机用户在应用里主动开始配对，并把 code 交给扩展完成绑定。
+    const pairingCode = body && typeof body === 'object' && !Array.isArray(body)
+      ? (body as Record<string, unknown>)['code']
+      : undefined;
+    const redeemed = redeemPairingCode(pairingCode);
+    if (redeemed !== 'ok') {
+      const message =
+        redeemed === 'required'
+          ? 'Open this app and press "Start pairing" to generate a one-time code, then enter it in the extension popup.'
+          : redeemed === 'expired'
+            ? 'The pairing code expired. Start a new pairing in the app.'
+            : 'The pairing code did not match. Check the code shown in the app and retry.';
+      return json(res, 403, { error: `pairing_${redeemed}`, message }, origin);
+    }
     const token = randomBytes(32).toString('base64url');
     await setSecret('bridgeToken', token);
+    // 首次成功配对即钉扎该扩展的 Origin；Disconnect 之前其他扩展一律拒绝。
+    if (origin) await setSecret('bridgePinnedOrigin', origin);
     noteBrowserSeen();
     logInfo('bridge: browser extension connected and provisioned');
     changed();
