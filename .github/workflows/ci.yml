@@ -32,7 +32,7 @@ jobs:
         run: npm ci
 
       - name: Audit production dependencies (fail on high or above)
-        run: npm audit --omit=dev --audit-level=high
+        run: node scripts/audit-production.mjs
 
   verify:
     name: Verify ${{ matrix.name }}
