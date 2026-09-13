@@ -3,6 +3,7 @@ import { paintPluginRefreshReminder } from './plugin-refresh-reminder.js';
 import { initUsage, refreshUsage } from './usage.js';
 import { initSidebarResize } from './sidebar-resize.js';
 import { initPlugins, applyPluginsState } from './plugins.js';
+import { initSecurity, applySecurityState, securitySettingsPatch } from './security.js';
 import { initBrowserPreferences } from './browser-preferences.js';
 /**
  * Renderer. No Node, no filesystem, no network — everything goes through window.api.
@@ -468,7 +469,8 @@ function save(over: { readOnly?: boolean; theme?: 'light' | 'dark' } = {}): Prom
       privacyScreenshots: $<HTMLInputElement>('privacyScreenshots').checked,
       theme: over.theme ?? previous.ui.theme
     },
-    ...chatPatch
+    ...chatPatch,
+    security: securitySettingsPatch()
   };
   requestedSettings = patch;
 
@@ -505,7 +507,8 @@ async function saveSnapshot(patch: SettingsPatch, previous: AppState['config']):
     compaction: previous.compaction,
     mcp: previous.mcp ?? { instructions: '' },
     multiAgent: previous.multiAgent,
-    goal: previous.goal
+    goal: previous.goal,
+    security: previous.security
   };
   const next = await run(api.saveSettings(patch, base));
   if (next) {
@@ -860,6 +863,7 @@ function paintUpdate(next: AppState): void {
 
 function apply(next: AppState): void {
   applyPluginsState(next);
+  applySecurityState(next, state);
   const previousState = state;
   state = next;
   applying = true;
@@ -1695,6 +1699,7 @@ buildGroups();
 initSidebarResize();
 initUsage();
 initPlugins(apply);
+initSecurity(() => save());
 initBrowserPreferences();
 initChat({ save: () => save(), state: () => state });
 

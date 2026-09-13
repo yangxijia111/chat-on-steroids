@@ -93,6 +93,7 @@
         </button>
         <button data-tab="usage" type="button"><svg class="ico" viewBox="0 0 24 24"><use href="#i-pulse" /></svg>Usage</button>
         <button data-tab="plugins" type="button"><svg class="ico" viewBox="0 0 24 24"><use href="#i-plus" /></svg>Plugins</button>
+        <button data-tab="security" type="button"><svg class="ico" viewBox="0 0 24 24"><use href="#i-lock" /></svg>Security</button>
 <button data-tab="setup" type="button">
           <svg class="ico" viewBox="0 0 24 24"><use href="#i-steps" /></svg>Setup
           <span class="badge" id="setupBadge" hidden></span>
@@ -187,6 +188,131 @@
           <div class="plugin-section-head"><h2>Explore plugins</h2><span class="muted">Made for your workflow</span></div>
           <div id="pluginsExplore" class="plugin-directory"></div>
           <details class="plugin-legal"><summary>Legal Notices / Third-party Licenses</summary><p>Catalog illustrations are original Chat On Steroids artwork, Copyright © 2026 Chat On Steroids contributors, licensed under the app’s MIT license. They illustrate independent integrations and are not official product logos or endorsements. Product names belong to their respective owners.</p><p>Installed plugins retain their own licenses. Open a plugin’s details to see its source, version and license. Review the upstream project before installation. Bundled dependency notices and reviewed catalog license texts are included in THIRD-PARTY-NOTICES.txt with the application; external plugins are downloaded separately.</p><button class="btn" id="pluginsLegalOpen" type="button">Open full third-party license texts</button></details>
+          </div>
+        </section>
+        <!-- ============================================================ Security -->
+        <section class="panel scroll security-panel" data-panel="security">
+          <div class="settings-heading">
+            <h1>Security</h1>
+            <p>Execution-layer guardrails for what the model may run on this computer. Changes save immediately.</p>
+          </div>
+
+          <h2 class="settings-section-title">Presets</h2>
+          <div class="pane">
+            <div class="setting">
+              <span class="setting-text">
+                <b>Apply a preset</b>
+                <em>Sets every option below at once. Development is the recommended balance; Full Automation trades oversight for unattended run time.</em>
+              </span>
+              <span class="acts">
+                <button class="btn" id="presetSafe" type="button">Safe</button>
+                <button class="btn btn-solid" id="presetDevelopment" type="button">Development · Recommended</button>
+                <button class="btn" id="presetFull" type="button">Full Automation</button>
+              </span>
+            </div>
+            <p class="muted">Critical actions (credential access, privilege escalation, destructive system operations, persistence, obfuscated commands, download-and-execute, security software changes) always require a local confirmation dialog — at any shell level.</p>
+          </div>
+
+          <h2 class="settings-section-title">Shell</h2>
+          <div class="pane">
+            <div class="setting">
+              <span class="setting-text">
+                <b>Shell level</b>
+                <em>0 blocks shell entirely. 1 allows only near-read-only commands (read-only git, file reads, version checks). 2 additionally allows ordinary development commands. 3 allows everything that survives the critical-action confirmation.</em>
+              </span>
+              <select id="securityShellLevel" aria-label="Shell level">
+                <option value="0">0 · No shell</option>
+                <option value="1">1 · Read-only commands</option>
+                <option value="2">2 · Ordinary development (default)</option>
+                <option value="3">3 · Full shell</option>
+              </select>
+            </div>
+            <div class="setting">
+              <span class="setting-text">
+                <b>Workspace trust</b>
+                <em>Untrusted refuses commands that execute project code (npm test, cargo build, make, pytest, Unreal/Unity builds) — building an untrusted repository runs code its authors left in it. Trusted is the everyday default. Full marks unattended, fully trusted automation.</em>
+              </span>
+              <select id="securityWorkspaceTrust" aria-label="Workspace trust">
+                <option value="untrusted">Untrusted · no project-code execution</option>
+                <option value="trusted">Trusted · everyday development (default)</option>
+                <option value="full">Full · unattended automation</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="securityShellAllowlist">Extra level-1 command prefixes</label>
+              <textarea id="securityShellAllowlist" rows="3" spellcheck="false" placeholder="One prefix per line, e.g. RunUAT.bat"></textarea>
+              <p class="hint">Entries are matched as command prefixes and allowed at shell level 1. Danger patterns (credentials, destructive, obfuscated, download-and-execute) still refuse regardless of this list.</p>
+            </div>
+          </div>
+
+          <h2 class="settings-section-title">Agents</h2>
+          <div class="pane">
+            <div class="setting">
+              <span class="setting-text">
+                <b>Worker permissions</b>
+                <em>Restricted workers can read files and coordinate, but cannot write, execute commands, drive the desktop or call plugin tools. Inherit gives workers the same permissions as your own chat.</em>
+              </span>
+              <select id="securityWorkerPermissions" aria-label="Worker permissions">
+                <option value="restricted">Restricted · read-only workers (default)</option>
+                <option value="inherit">Inherit · full worker permissions</option>
+              </select>
+            </div>
+          </div>
+
+          <h2 class="settings-section-title">Desktop</h2>
+          <div class="pane">
+            <div class="field">
+              <label for="securityDesktopAllowlist">Desktop app allowlist</label>
+              <textarea id="securityDesktopAllowlist" rows="3" spellcheck="false" placeholder="One entry per line, e.g. UnrealEditor.exe"></textarea>
+              <p class="hint">Empty means no restriction (password managers, sign-in/UAC and system settings stay hard-denied either way). Entries must be exact executable basenames (UnrealEditor.exe) or exact full paths — no prefix matching. With a list configured, actions on unrecognised targets are refused.</p>
+            </div>
+          </div>
+
+          <h2 class="settings-section-title">Automation budget</h2>
+          <div class="pane">
+            <div class="setting">
+              <span class="setting-text">
+                <b>Budget enforcement</b>
+                <em>Applies while Goal/Loop is armed, aggregated per automation run: the prime chat and every worker share one budget.</em>
+              </span>
+              <span class="sw"><input type="checkbox" id="securityBudgetEnabled" /><i></i></span>
+            </div>
+            <div class="setting">
+              <span class="setting-text"><b>Tool calls per run</b></span>
+              <input id="securityBudgetToolCalls" class="num" type="number" min="10" max="100000" step="10" />
+            </div>
+            <div class="setting">
+              <span class="setting-text"><b>Shell commands per run</b></span>
+              <input id="securityBudgetExecs" class="num" type="number" min="1" max="10000" step="1" />
+            </div>
+            <div class="setting">
+              <span class="setting-text"><b>Worker spawns per run</b></span>
+              <input id="securityBudgetSpawns" class="num" type="number" min="0" max="1000" step="1" />
+            </div>
+            <div class="setting">
+              <span class="setting-text"><b>Desktop actions per run</b></span>
+              <input id="securityBudgetDesktop" class="num" type="number" min="1" max="100000" step="10" />
+            </div>
+            <div class="setting">
+              <span class="setting-text"><b>File modifications per run</b></span>
+              <input id="securityBudgetWrites" class="num" type="number" min="1" max="100000" step="10" />
+            </div>
+            <div class="setting">
+              <span class="setting-text"><b>Runtime cap</b></span>
+              <input id="securityBudgetRuntime" class="num" type="number" min="1" max="10080" step="1" />
+              <span class="unit">minutes</span>
+            </div>
+          </div>
+
+          <h2 class="settings-section-title">Audit</h2>
+          <div class="pane">
+            <div class="setting">
+              <span class="setting-text">
+                <b>Security audit log</b>
+                <em>Records permission decisions and dangerous commands (secret-redacted) to the app's security folder. Turning it off takes effect immediately.</em>
+              </span>
+              <span class="sw"><input type="checkbox" id="securityAuditLog" /><i></i></span>
+            </div>
           </div>
         </section>
         <section class="panel usage-panel" data-panel="usage">

@@ -41,6 +41,7 @@ export interface SettingsPatch {
   multiAgent: Config['multiAgent'];
   goal: Config['goal'];
   mcp: Config['mcp'];
+  security: Config['security'];
 }
 
 /** One page of the model catalogue, as the model picker asks for it. */
