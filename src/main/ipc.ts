@@ -380,7 +380,8 @@ const renameRoot = z.object({
     .string()
     .min(1)
     .max(32)
-    .regex(/^[a-z0-9][a-z0-9._-]*$/, 'Lowercase letters, digits, dot, dash and underscore only')
+    // 与配置存储的根名规则一致：任何语言的字母/数字开头，其余仅限点、横线、下划线。
+    .regex(/^[\p{L}\p{N}][\p{L}\p{N}._-]*$/u, 'Letters, digits, dot, dash and underscore only')
 });
 
 function resolvedBinary(config: Config): string | null {

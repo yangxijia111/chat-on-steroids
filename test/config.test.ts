@@ -184,6 +184,47 @@ describe('settings migration', () => {
     expect(new Set(loaded.roots.map((root) => root.name)).size).toBe(loaded.roots.length);
   });
 
+  it('repairs CJK root names that older builds collapsed to folder/folder-N', async () => {
+    await fs.writeFile(
+      path.join(dir, 'config.json'),
+      JSON.stringify({
+        ...defaultConfig(),
+        roots: [
+          { name: 'folder', path: 'C:\\Users\\example\\科目一' },
+          { name: 'folder-2', path: 'C:\\Users\\example\\科目四' },
+          { name: 'folder-3', path: 'C:\\Users\\example\\科目一' }
+        ]
+      }),
+      'utf8'
+    );
+    const loaded = await loadConfig();
+    // 名字恢复自真实目录名；同名目录按出现顺序加后缀。路径（权限本身）不变。
+    expect(loaded.roots.map((root) => root.name)).toEqual(['科目一', '科目四', '科目一-2']);
+    expect(loaded.roots.map((root) => root.path)).toEqual([
+      'C:\\Users\\example\\科目一',
+      'C:\\Users\\example\\科目四',
+      'C:\\Users\\example\\科目一'
+    ]);
+  });
+
+  it('leaves a folder genuinely named folder on its own name', async () => {
+    await fs.writeFile(
+      path.join(dir, 'config.json'),
+      JSON.stringify({ ...defaultConfig(), roots: [{ name: 'folder', path: 'C:\\Users\\example\\folder' }] }),
+      'utf8'
+    );
+    const loaded = await loadConfig();
+    expect(loaded.roots[0]?.name).toBe('folder');
+  });
+
+  it('persists a CJK root name through a save/load cycle', async () => {
+    const config = defaultConfig();
+    const withRoot = { ...config, roots: [{ name: '科目一', path: 'C:\\Users\\example\\科目一' }] };
+    await saveConfig(withRoot);
+    const loaded = await loadConfig();
+    expect(loaded.roots).toEqual([{ name: '科目一', path: 'C:\\Users\\example\\科目一' }]);
+  });
+
   it('round-trips a second tunnel id for the Desktop connector', async () => {
     const config = defaultConfig();
     await saveConfig({

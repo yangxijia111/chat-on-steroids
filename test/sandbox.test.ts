@@ -51,6 +51,12 @@ describe('virtual paths embedded in shell text', () => {
     expect(strayVirtualPath('de/project/file.txt', roots)).toBeNull();
     expect(strayVirtualPath('/not-approved/file.txt', roots)).toBeNull();
   });
+
+  it('recognises CJK root names written into a command', () => {
+    const cjkRoots: Root[] = [{ name: '科目一', path: approved }];
+    expect(strayVirtualPath('Get-Content /科目一/笔记.md', cjkRoots)).toBe('/科目一/笔记.md');
+    expect(strayVirtualPath('Get-Content /其他/笔记.md', cjkRoots)).toBeNull();
+  });
 });
 
 /** Asserts the call is refused, and that it is refused by the sandbox itself. */
@@ -346,6 +352,21 @@ describe('root names', () => {
     expect(normaliseRootName('a'.repeat(80)).length).toBe(32);
   });
 
+  it('keeps letters from every script, so CJK folder names stay distinct', () => {
+    // 退化成 "folder"/"folder-2" 时模型无法区分已批准的根目录，会读错文件夹。
+    expect(normaliseRootName('科目一')).toBe('科目一');
+    expect(normaliseRootName('学习资料 v2')).toBe('学习资料-v2');
+    expect(normaliseRootName('Übungen')).toBe('übungen');
+    expect(normaliseRootName('ノート')).toBe('ノート');
+    expect(normaliseRootName('データ/入力')).toBe('データ-入力');
+  });
+
+  it('never splits a surrogate pair when truncating', () => {
+    const name = normaliseRootName('𠀀'.repeat(40));
+    expect(name.length).toBe(32);
+    expect(name).not.toMatch(/[\uD800-\uDBFF]$/);
+  });
+
   it('avoids collisions', () => {
     const existing: Root[] = [
       { name: 'src', path: path.join(path.parse(process.cwd()).root, 'a') },
@@ -353,6 +374,13 @@ describe('root names', () => {
     ];
     expect(uniqueRootName(path.join(path.parse(process.cwd()).root, 'x', 'src'), existing)).toBe('src-3');
     expect(uniqueRootName(path.join(path.parse(process.cwd()).root, 'x', 'other'), existing)).toBe('other');
+  });
+
+  it('gives CJK folders their own name and suffixes only true collisions', () => {
+    const root_ = path.parse(process.cwd()).root;
+    expect(uniqueRootName(path.join(root_, '资料', '科目一'), [])).toBe('科目一');
+    const existing: Root[] = [{ name: '科目一', path: path.join(root_, 'a') }];
+    expect(uniqueRootName(path.join(root_, 'b', '科目一'), existing)).toBe('科目一-2');
   });
 });
 

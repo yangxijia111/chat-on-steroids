@@ -70,13 +70,22 @@ export function suggestApprovedSpelling(roots: readonly Root[], segments: readon
   return null;
 }
 
-/** Normalises a user-supplied root name into the slug used in virtual paths. */
+/**
+ * Normalises a user-supplied root name into the slug used in virtual paths.
+ *
+ * Letters and digits from every script are kept (Unicode property classes, not ASCII):
+ * a CJK folder name like 科目一 must survive, or every non-Latin folder collapses to
+ * "folder"/"folder-2" and the model cannot tell the approved roots apart — it then reads
+ * the wrong folder. Only characters unsafe in a path segment become separators.
+ */
 export function normaliseRootName(input: string): string {
   const slug = input
     .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, '-')
-    .replace(/^[-.]+|[-.]+$/g, '')
-    .slice(0, 32);
+    .replace(/[^\p{L}\p{N}._-]+/gu, '-')
+    .replace(/^[-._]+|[-._]+$/g, '')
+    // 按 UTF-16 单位截断，但不能把增补平面字符（代理对）切成孤立代理。
+    .slice(0, 32)
+    .replace(/[\uD800-\uDBFF]$/, '');
   return slug || 'folder';
 }
 
@@ -480,8 +489,9 @@ export function strayVirtualPath(text: string, roots: readonly Root[]): string |
   const names = new Set(roots.map((root) => root.name.toLowerCase()));
   // A candidate must start the string or follow whitespace or an opening quote/bracket:
   // anything else in front of it means it is part of a longer token, not a path.
-  const candidate = /(^|[\s'"`(,=[{])(\/[A-Za-z0-9._-]+(?:\/[^\s'"`;|)\]}]*)?)/g;
-  for (let match = candidate.exec(text); match; match = candidate.exec(text)) {
+  // 首段与根名同用 Unicode 字母/数字类：中文根名（如 /科目一/x）同样要被认出并拦下。
+  const candidate = /(^|[\s'"`(,=[{])(\/[\p{L}\p{N}._-]+(?:\/[^\s'"`;|)\]}]*)?)/gu;
+  for (const match of text.matchAll(candidate)) {
     const found = match[2]!;
     const first = found.slice(1).split('/')[0]!.toLowerCase();
     if (names.has(first)) return found;

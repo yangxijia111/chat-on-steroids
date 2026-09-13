@@ -40,7 +40,7 @@ import {
   SUPERSEDED_GOAL_SYSTEM_PROMPTS
 } from '../shared/goal.js';
 import { logError } from './logger.js';
-import { RESERVED_ROOT_NAMES } from './sandbox.js';
+import { RESERVED_ROOT_NAMES, normaliseRootName } from './sandbox.js';
 import { capabilitiesForPlatform } from './platform.js';
 
 /**
@@ -224,7 +224,9 @@ const rootSchema = z.object({
     .string()
     .min(1)
     .max(32)
-    .regex(/^[a-z0-9][a-z0-9._-]*$/, 'Root names are lowercase letters, digits, dot, dash, underscore'),
+    // 与 normaliseRootName 生成的 slug 同类：任何语言的字母/数字（中文根名必须能持久化，
+    // 否则非拉丁文件夹名在重启后无法通过配置校验），其余仅限点、横线、下划线。
+    .regex(/^[\p{L}\p{N}][\p{L}\p{N}._-]*$/u, 'Root names are letters, digits, dot, dash, underscore'),
   path: z.string().min(2).max(4096)
 });
 
@@ -232,6 +234,12 @@ const rootSchema = z.object({
  * Repairs root names from older/hand-edited configs without ever publishing an ambiguous
  * virtual namespace. Reserved names and duplicates are renamed deterministically in input
  * order, preserving the first usable spelling and suffixing later collisions.
+ *
+ * Also repairs names written by builds whose slug stripped every non-Latin character: a
+ * Chinese folder like 科目一 collapsed to "folder" (the next one "folder-2"), and the model
+ * was then told about indistinguishable roots — so it read the wrong folder. The degraded
+ * name is replaced by the folder's own basename slug. Only the virtual name changes; the
+ * path, which is the actual permission, is never touched.
  */
 function uniqueStoredRoots(roots: Root[]): Root[] {
   const used = new Set<string>();
@@ -246,7 +254,10 @@ function uniqueStoredRoots(roots: Root[]): Root[] {
     return candidate;
   };
   return roots.map((root) => {
-    const name = nextFree(root.name);
+    const degraded = /^folder(?:-\d+)?$/.test(root.name);
+    const fromBasename = normaliseRootName(path.basename(root.path) || 'folder');
+    const wanted = degraded && fromBasename !== 'folder' ? fromBasename : root.name;
+    const name = nextFree(wanted);
     used.add(name);
     return name === root.name ? root : { ...root, name };
   });
