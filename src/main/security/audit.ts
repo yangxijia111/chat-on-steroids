@@ -58,16 +58,19 @@ let auditFile = '';
 let pending: string[] = [];
 let writing = false;
 let writerError = false;
-/** 配置关闭审计后整体旁路；null = 未初始化（测试环境），同样旁路。 */
-let enabled: boolean | null = null;
 
-/** 初始化审计存储目录；目录不可用时降级为内存丢弃（审计失败不得拖垮工具）。 */
+/**
+ * 初始化审计存储目录；目录不可用时降级为内存丢弃（审计失败不得拖垮工具）。
+ *
+ * 注意这里刻意不读、也不缓存 auditLog 开关：初始化发生在 loadConfig() 之前
+ * （index.ts 的启动顺序），而开关必须在每次写入时按当前生效配置判定，
+ * 否则「重启后 auditLog=false 生效」与「运行时改设置立即生效」都会失真。
+ */
 export function initAuditLog(dir: string): void {
   auditDir = dir;
   auditFile = path.join(dir, 'audit.jsonl');
   pending = [];
   writerError = false;
-  enabled = getConfig().security?.auditLog ?? true;
   void fs.mkdir(dir, { recursive: true }).catch(() => {
     writerError = true;
   });
@@ -118,10 +121,10 @@ async function flush(): Promise<void> {
 
 /**
  * 记录一条安全事件。fire-and-forget：审计写入失败绝不影响工具执行路径。
+ * auditLog 开关每次按当前生效配置读取（不缓存过期值），运行时改设置立即生效。
  */
 export function recordSecurityAudit(entry: Omit<SecurityAuditEntry, 'time'> & { time?: number }): void {
-  if (enabled === null) enabled = getConfig().security?.auditLog ?? true;
-  if (!enabled) return;
+  if (!(getConfig().security?.auditLog ?? true)) return;
   const full: SecurityAuditEntry = {
     time: entry.time ?? Date.now(),
     session: sanitize(entry.session, 64),
@@ -150,7 +153,6 @@ export function resetAuditForTests(): void {
   pending = [];
   writing = false;
   writerError = false;
-  enabled = null;
 }
 
 /** 测试读取当前待写行。 */

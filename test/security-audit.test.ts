@@ -6,7 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { initConfigPath, defaultConfig, saveConfig } from '../src/main/config.js';
-import { initAuditLog, recordSecurityAudit, resetAuditForTests } from '../src/main/security/audit.js';
+import { initAuditLog, recordSecurityAudit, resetAuditForTests, auditPendingForTests } from '../src/main/security/audit.js';
 import { redactCredentialText } from '../src/main/redaction.js';
 import { redact } from '../src/main/logger.js';
 import { makeTempDir, removeTempDir } from './helpers.js';
@@ -124,7 +124,29 @@ describe('credential redaction patterns', () => {
   });
 
   it('logger redact masks jwt and long opaque tokens', () => {
-    const jwt = ['eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9', 'eyJzdWIiOiIxMjM0NTY3ODkwIn0', 'dozjgNryP4J3jVmNHl0w5N65IwdjAqTFmpzg5uoA0'].join('.');
+    const jwt = ['eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9', 'eyJzdWIiOiIxMjM0NTY3ODkwIn0', 'dozjgNryP4J7jVmNHl0w5N65IwdjAqTFmpzg5uoA0'].join('.');
     expect(redact(`jwt ${jwt}`)).not.toContain('eyJhbGciOi');
+  });
+});
+
+describe('audit configuration wiring', () => {
+  it('the auditLog switch is read live: runtime changes take effect immediately', async () => {
+    const base = defaultConfig();
+    // 关闭（模拟用户在设置里关掉审计）→ 新事件不再落盘。
+    await saveConfig({ ...base, security: { ...base.security, auditLog: false } });
+    recordSecurityAudit({
+      session: null, agent: null, tool: 'exec_command', action: 'shell.execute',
+      target: 'switched-off-probe', risk: 'low', decision: 'allowed-low-risk', reason: null
+    });
+    expect(auditPendingForTests()).toHaveLength(0);
+    // 重新开启 → 立即恢复记录。
+    await saveConfig({ ...base, security: { ...base.security, auditLog: true } });
+    recordSecurityAudit({
+      session: null, agent: null, tool: 'exec_command', action: 'shell.execute',
+      target: 'switched-on-probe', risk: 'low', decision: 'allowed-low-risk', reason: null
+    });
+    const pending = auditPendingForTests().map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(pending.some((row) => row['target'] === 'switched-on-probe')).toBe(true);
+    expect(pending.some((row) => row['target'] === 'switched-off-probe')).toBe(false);
   });
 });

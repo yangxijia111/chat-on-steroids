@@ -170,6 +170,27 @@ const settingsPatch = z.object({
     recoverAgentTabs: z.boolean()
   }),
   mcp: z.object({ instructions: z.string().trim().max(MAX_MCP_INSTRUCTIONS_CHARS) }).strict().optional(),
+  // 安全设置（Security 页面 / presets 保存链路）。所有字段必填：renderer 发送的是
+  // 整个 security 快照，与其它设置段一致；缺字段的旧快照走 optional 兜底为不修改。
+  security: z
+    .object({
+      shellLevel: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3)]),
+      workspaceTrust: z.enum(['untrusted', 'trusted', 'full']),
+      shellAllowlist: z.array(z.string().min(1).max(200)).max(64),
+      workerPermissions: z.enum(['restricted', 'inherit']),
+      desktopAppAllowlist: z.array(z.string().min(1).max(260)).max(64),
+      loopBudget: z.object({
+        enabled: z.boolean(),
+        maxToolCallsPerRun: z.number().int().min(10).max(100_000),
+        maxExecPerRun: z.number().int().min(1).max(10_000),
+        maxWorkerSpawnsPerRun: z.number().int().min(0).max(1_000),
+        maxDesktopActionsPerRun: z.number().int().min(1).max(100_000),
+        maxFileWritesPerRun: z.number().int().min(1).max(100_000),
+        maxRuntimeMinutes: z.number().int().min(1).max(10_080)
+      }),
+      auditLog: z.boolean()
+    })
+    .optional(),
   goal: z.object({
     impulseMinutes: z.number().int().min(0).max(60).optional(),
     includeToolCalls: z.boolean().optional(),
@@ -322,7 +343,30 @@ function mergeSettings(current: Config, base: SettingsSnapshot, wanted: Settings
         wanted.goal.objectivePrompt
       ),
       loopPrompt: pick(current.goal.loopPrompt, base.goal.loopPrompt, wanted.goal.loopPrompt)
-    }
+    },
+    security: (() => {
+      // 旧 renderer 快照没有 security 段：以 current 补齐后按字段做三方合并，
+      // 保持 pick 的类型与其余设置段一致（非 optional 字段不吃 undefined）。
+      const before = base.security ?? current.security;
+      const wantedSecurity = wanted.security ?? current.security;
+      return {
+        shellLevel: pick(current.security.shellLevel, before.shellLevel, wantedSecurity.shellLevel),
+        workspaceTrust: pick(current.security.workspaceTrust, before.workspaceTrust, wantedSecurity.workspaceTrust),
+        shellAllowlist: pick(current.security.shellAllowlist, before.shellAllowlist, wantedSecurity.shellAllowlist),
+        workerPermissions: pick(current.security.workerPermissions, before.workerPermissions, wantedSecurity.workerPermissions),
+        desktopAppAllowlist: pick(current.security.desktopAppAllowlist, before.desktopAppAllowlist, wantedSecurity.desktopAppAllowlist),
+        loopBudget: {
+          enabled: pick(current.security.loopBudget.enabled, before.loopBudget.enabled, wantedSecurity.loopBudget.enabled),
+          maxToolCallsPerRun: pick(current.security.loopBudget.maxToolCallsPerRun, before.loopBudget.maxToolCallsPerRun, wantedSecurity.loopBudget.maxToolCallsPerRun),
+          maxExecPerRun: pick(current.security.loopBudget.maxExecPerRun, before.loopBudget.maxExecPerRun, wantedSecurity.loopBudget.maxExecPerRun),
+          maxWorkerSpawnsPerRun: pick(current.security.loopBudget.maxWorkerSpawnsPerRun, before.loopBudget.maxWorkerSpawnsPerRun, wantedSecurity.loopBudget.maxWorkerSpawnsPerRun),
+          maxDesktopActionsPerRun: pick(current.security.loopBudget.maxDesktopActionsPerRun, before.loopBudget.maxDesktopActionsPerRun, wantedSecurity.loopBudget.maxDesktopActionsPerRun),
+          maxFileWritesPerRun: pick(current.security.loopBudget.maxFileWritesPerRun, before.loopBudget.maxFileWritesPerRun, wantedSecurity.loopBudget.maxFileWritesPerRun),
+          maxRuntimeMinutes: pick(current.security.loopBudget.maxRuntimeMinutes, before.loopBudget.maxRuntimeMinutes, wantedSecurity.loopBudget.maxRuntimeMinutes)
+        },
+        auditLog: pick(current.security.auditLog, before.auditLog, wantedSecurity.auditLog)
+      };
+    })()
   };
 }
 
