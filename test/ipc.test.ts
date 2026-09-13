@@ -16,10 +16,17 @@ const handlers = new Map<string, Handler>();
  * Half of the sender-gate contract; `trustedWindow()` below is the other half.
  *
  * `src/main/ipc.ts` refuses any channel whose `event.sender.id` is not the live main
- * window's `webContents.id`. A suite that invokes handlers directly has to supply both
- * sides of that comparison, so this event and that window must carry the same id.
+ * window's `webContents.id`, whose sender frame is not the main frame, or whose frame
+ * URL is not the renderer the main window loaded. A suite that invokes handlers directly
+ * has to supply both sides of those comparisons, so this event and that window must
+ * carry the same id, main frame and URL.
  */
-const trustedEvent = { sender: { id: 7 } };
+const RENDERER_URL = 'file:///app/dist/renderer/index.html';
+const trustedFrame = { url: RENDERER_URL };
+const trustedEvent = {
+  sender: { id: 7, mainFrame: trustedFrame },
+  senderFrame: trustedFrame
+};
 
 vi.mock('electron', () => ({
   ipcMain: {
@@ -83,7 +90,7 @@ type TestWindow = {
   setBackgroundColor: ReturnType<typeof vi.fn>;
   setTitleBarOverlay: ReturnType<typeof vi.fn>;
   isDestroyed: () => boolean;
-  webContents: { send: ReturnType<typeof vi.fn>; id: number; isDestroyed: () => boolean };
+  webContents: { send: ReturnType<typeof vi.fn>; id: number; isDestroyed: () => boolean; mainFrame?: { url: string } };
 };
 
 /**
@@ -98,7 +105,7 @@ const trustedWindow = (): TestWindow => ({
   setBackgroundColor: vi.fn(),
   setTitleBarOverlay: vi.fn(),
   isDestroyed: () => false,
-  webContents: { send: vi.fn(), id: trustedEvent.sender.id, isDestroyed: () => false }
+  webContents: { send: vi.fn(), id: trustedEvent.sender.id, isDestroyed: () => false, mainFrame: { url: RENDERER_URL } }
 });
 
 let currentWindow: TestWindow | null = null;
@@ -112,6 +119,36 @@ const registerTestIpc = (window: () => unknown): void => registerIpc(window as a
 
 const save = (patch: unknown, base: unknown = getConfig()): Promise<any> =>
   handlers.get('settings:save')!(trustedEvent, { patch, base }) as Promise<any>;
+
+describe('ipc sender frame gate (second-phase hardening)', () => {
+  it('refuses a nested frame even with the right sender id', async () => {
+    const nestedFrame = { url: RENDERER_URL };
+    const event = { sender: { id: trustedEvent.sender.id, mainFrame: trustedFrame }, senderFrame: nestedFrame };
+    const reply = (await handlers.get('settings:save')!(event as any, { patch: {}, base: {} })) as { ok: boolean; error: string };
+    expect(reply.ok).toBe(false);
+    expect(reply.error).toBe('Untrusted IPC sender');
+  });
+
+  it('refuses the main frame when its URL is not the renderer the window loaded', async () => {
+    const rogueFrame = { url: 'https://chatgpt.com' };
+    const event = { sender: { id: trustedEvent.sender.id, mainFrame: rogueFrame }, senderFrame: rogueFrame };
+    const reply = (await handlers.get('sessions:list')!(event as any, undefined)) as { ok: boolean; error: string };
+    expect(reply.ok).toBe(false);
+    expect(reply.error).toBe('Untrusted IPC sender');
+  });
+
+  it('refuses an event with no resolvable sender frame (fail-closed)', async () => {
+    const event = { sender: { id: trustedEvent.sender.id, mainFrame: trustedFrame } };
+    const reply = (await handlers.get('sessions:list')!(event as any, undefined)) as { ok: boolean; error: string };
+    expect(reply.ok).toBe(false);
+    expect(reply.error).toBe('Untrusted IPC sender');
+  });
+
+  it('still serves the trusted main-frame renderer', async () => {
+    const reply = (await handlers.get('sessions:list')!(trustedEvent as any, undefined)) as { ok: boolean };
+    expect(reply.ok).toBe(true);
+  });
+});
 const renameRoot = (payload: unknown): Promise<any> => handlers.get('roots:rename')!(trustedEvent, payload) as Promise<any>;
 const removeRoot = (payload: unknown): Promise<any> => handlers.get('roots:remove')!(trustedEvent, payload) as Promise<any>;
 const sessionEvents = (payload: unknown): Promise<any> => handlers.get('sessions:events')!(trustedEvent, payload) as Promise<any>;

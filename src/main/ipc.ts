@@ -416,6 +416,8 @@ async function buildState(): Promise<AppState> {
  * 内容）都不应能调用这些高权限 channel——sender id 不匹配一律拒绝。
  */
 let resolveTrustedSender: (() => number | null) | null = null;
+/** 主窗口当前加载的 Renderer URL（frame 身份验证的基准）；无窗口时为 null。 */
+let resolveRendererUrl: (() => string | null) | null = null;
 
 /** Wraps a handler so a thrown error becomes a message the UI can show. */
 function handle<T>(channel: string, fn: (payload: unknown) => Promise<T>): void {
@@ -424,6 +426,22 @@ function handle<T>(channel: string, fn: (payload: unknown) => Promise<T>): void 
       const trusted = resolveTrustedSender?.() ?? null;
       if (trusted === null || event.sender.id !== trusted) {
         logWarn(`ipc ${channel}: refused an untrusted sender`);
+        return { ok: false as const, error: 'Untrusted IPC sender' };
+      }
+      // 二阶段 P2：sender id 之外再验 frame —— 调用必须来自同一 webContents 的主
+      // frame，且 frame URL 就是主窗口当前加载的本应用 Renderer。未知/嵌套/被导航
+      // 走的 frame 一律拒绝（fail-closed）。
+      const rendererUrl = resolveRendererUrl?.() ?? null;
+      const senderFrame = event.senderFrame;
+      const mainFrame = event.sender.mainFrame;
+      const frameTrusted =
+        rendererUrl !== null &&
+        senderFrame !== undefined && senderFrame !== null &&
+        mainFrame !== undefined && mainFrame !== null &&
+        senderFrame === mainFrame &&
+        senderFrame.url === rendererUrl;
+      if (!frameTrusted) {
+        logWarn(`ipc ${channel}: refused a non-main frame sender`);
         return { ok: false as const, error: 'Untrusted IPC sender' };
       }
       return { ok: true as const, data: await fn(payload) };
@@ -446,6 +464,11 @@ export function registerIpc(getWindow: () => BrowserWindow | null, quitToInstall
     const window = getWindow();
     const id = window?.webContents?.id;
     return typeof id === 'number' && !window!.webContents.isDestroyed() ? id : null;
+  };
+  resolveRendererUrl = () => {
+    const window = getWindow();
+    const url = window?.webContents?.mainFrame?.url;
+    return typeof url === 'string' && url !== '' && !window!.webContents.isDestroyed() ? url : null;
   };
   // Critical 确认对话框需要主窗口（无窗口时 fail-closed 拒绝）。
   initApprovalPrompt(getWindow);
