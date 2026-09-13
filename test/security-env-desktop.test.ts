@@ -99,6 +99,40 @@ describe('desktop target gate', () => {
     expect(checkDesktopTarget('launch', 'chrome.exe', allowlist).refusal).toContain('DESKTOP_APP_NOT_ALLOWED');
   });
 
+  it('allowlist matching is exact — no prefix or fuzzy matching', () => {
+    const allowlist = ['Code.exe', 'notepad.exe'];
+    // 前缀相似不匹配。
+    expect(checkDesktopTarget('input', 'CodeSecondary.exe', allowlist).allowed).toBe(false);
+    expect(checkDesktopTarget('input', 'notepad-plus.exe', allowlist).allowed).toBe(false);
+    // 条目缺 .exe 也不会「包容」目标的全名。
+    expect(checkDesktopTarget('input', 'notepad.exe', ['notepad']).allowed).toBe(false);
+    expect(checkDesktopTarget('input', 'notepad', ['notepad']).allowed).toBe(true);
+  });
+
+  it('path entries match the full executable path exactly', () => {
+    const entry = 'C:\\Tools\\UnrealEditor.exe';
+    const allowlist = [entry];
+    expect(checkDesktopTarget('launch', 'UnrealEditor.exe', allowlist, 'C:\\Tools\\UnrealEditor.exe').allowed).toBe(true);
+    // basename 相同但路径不同 → 拒绝。
+    expect(checkDesktopTarget('launch', 'UnrealEditor.exe', allowlist, 'D:\\Other\\UnrealEditor.exe').allowed).toBe(false);
+    // 无完整路径可比 → 拒绝（fail-closed，不做 basename 猜测）。
+    expect(checkDesktopTarget('launch', 'UnrealEditor.exe', allowlist, null).allowed).toBe(false);
+    // 大小写与斜杠方向归一。
+    expect(checkDesktopTarget('launch', 'unrealeditor.exe', allowlist, 'c:/tools/UnrealEditor.exe').allowed).toBe(true);
+  });
+
+  it('configured allowlist refuses targets that cannot be confirmed (fail-closed)', () => {
+    const allowlist = ['Code.exe'];
+    for (const action of ['input', 'capture', 'launch'] as const) {
+      const check = checkDesktopTarget(action, null, allowlist);
+      expect(check.allowed, action).toBe(false);
+      expect(check.refusal, action).toContain('DESKTOP_TARGET_UNKNOWN');
+      expect(checkDesktopTarget(action, '', allowlist).allowed, action).toBe(false);
+    }
+    // 未配置 allowlist 时未知目标保持原行为（native 层一致性校验兜底）。
+    expect(checkDesktopTarget('input', null, []).allowed).toBe(true);
+  });
+
   it('normalizes path-qualified process names', () => {
     expect(isSensitiveApp('C:\\Program Files\\KeePass Password Safe 2\\KeePass.exe')).toBe(true);
     expect(checkDesktopTarget('input', '/Applications/1Password.app/Contents/MacOS/1Password', []).allowed).toBe(false);

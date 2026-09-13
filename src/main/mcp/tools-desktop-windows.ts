@@ -94,8 +94,12 @@ async function refuseBrowserChord(key: string, resolved: { process: string | nul
 
 /**
  * 桌面目标防护闸（docs/THREAT-MODEL.md H1）：敏感应用硬拒绝 + 可选应用白名单。
- * 在合成输入/截图/启动执行之前解析目标进程名并检查；解析失败时按原路径继续，
- * 由 native 层的一致性校验给出自己的错误（能识别的目标一律强校验）。
+ * 在合成输入/截图/启动执行之前解析目标进程名并检查。
+ *
+ * 二阶段 fail-closed：配置了白名单时，无法确认目标（无 window id、解析失败、
+ * 进程名缺失）的 input/capture/launch 一律拒绝，不再依赖 native 层的事后
+ * 一致性校验兜底。未配置白名单时保持原行为（能识别的目标一律强校验，
+ * 窗口不存在等仍由 native 层给出自己的错误）。
  *
  * 返回已解析的进程名供后续检查（浏览器和弦）复用，避免二次窗口查询。
  */
@@ -104,6 +108,7 @@ async function resolveDesktopGate(
   input: unknown
 ): Promise<{ refusal: string | null; process: string | null; title: string | null }> {
   const allowlist = getConfig().security?.desktopAppAllowlist ?? [];
+  const restricted = allowlist.length > 0;
   const auditDenied = (target: string | null, reason: string): void => {
     const caller = currentCall();
     recordSecurityAudit({
@@ -120,7 +125,7 @@ async function resolveDesktopGate(
 
   if (method === 'launch_app') {
     const app = (input as { app?: string }).app ?? null;
-    const check = checkDesktopTarget('launch', app, allowlist);
+    const check = checkDesktopTarget('launch', app, allowlist, typeof app === 'string' && app.trim() !== '' ? app : null);
     if (!check.allowed) auditDenied(app ?? null, check.refusal ?? 'launch denied');
     return { refusal: check.allowed ? null : check.refusal, process: null, title: null };
   }
@@ -132,7 +137,17 @@ async function resolveDesktopGate(
   const windowId = window && typeof window === 'object' && typeof (window as { id?: unknown }).id === 'number'
     ? (window as { id: number }).id
     : null;
-  if (windowId === null) return { refusal: null, process: null, title: null };
+  if (windowId === null) {
+    // fail-closed（仅在配置了 allowlist 的受限模式下）：没有可确认的目标就拒绝。
+    if (restricted) {
+      const refusal =
+        'DESKTOP_TARGET_UNKNOWN: a desktop app allowlist is configured, but this call named no window id, ' +
+        'so the target application cannot be confirmed. Provide an explicit window target.';
+      auditDenied(null, refusal);
+      return { refusal, process: null, title: null };
+    }
+    return { refusal: null, process: null, title: null };
+  }
   let process: string | null = null;
   let title: string | null = null;
   try {
@@ -140,7 +155,15 @@ async function resolveDesktopGate(
     process = state.window?.process ?? null;
     title = state.window?.title ?? null;
   } catch {
-    // 目标解析失败：native 层会以 STALE_WINDOW 等错误拒绝，无需在此重复。
+    // 目标解析失败：受限模式下拒绝（fail-closed）；未受限时窗口本身不存在，
+    // 由 native 层以 STALE_WINDOW 等错误拒绝，无需在此重复。
+    if (restricted) {
+      const refusal =
+        'DESKTOP_TARGET_UNKNOWN: a desktop app allowlist is configured, but the target window could not be ' +
+        'resolved to an application, so the action is refused rather than acting on an unknown target.';
+      auditDenied(null, refusal);
+      return { refusal, process: null, title: null };
+    }
     return { refusal: null, process: null, title: null };
   }
   const check = checkDesktopTarget(capture ? 'capture' : 'input', process, allowlist);

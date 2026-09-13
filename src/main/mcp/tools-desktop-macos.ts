@@ -90,20 +90,42 @@ async function browserChordRefusal(actions: Action[]): Promise<string | null> {
 
 /**
  * 桌面目标防护闸（docs/THREAT-MODEL.md H1，macOS 侧）：敏感应用硬拒绝 + 可选
- * 应用白名单。覆盖显式 focus 目标与捕获目标 —— 这两类可以从窗口清单解析出
- * 进程名而不产生任何输入副作用。
+ * 应用白名单。覆盖显式 focus 目标、捕获目标与 launch_app —— 这三类可以从窗口
+ * 清单/参数解析出目标而不产生任何输入副作用。
  *
- * 刻意不做「无 focus 输入 → 查前台」的推断：普通按键批次承诺不询问窗口
- * （tools-desktop-runtime 的契约），而坐标/引用动作的精确帧归属由 helper 的
- * assertInputTarget 在执行边界强校验。无显式目标的敏感应用防护在此平台是
- * 已记录的剩余风险（docs/SECURITY-HARDENING.md）；Windows 平台为全量门控。
+ * 二阶段 fail-closed：配置了白名单（受限模式）时，无显式 focus 的输入批次也会
+ * 探测前台窗口核对目标（activeWindow 是无输入副作用的查询），探测不到目标进程
+ * 即拒绝。未配置白名单时保持「普通按键批次不询问窗口」的原契约 —— 那是用户
+ * 没有要求限制应用范围时的性能选择；helper 的 assertInputTarget 仍在执行边界
+ * 强校验帧归属。
  */
 async function desktopTargetRefusal(actions: Action[], captureWindow: number | undefined): Promise<string | null> {
   const security = getConfig().security;
   const allowlist = security?.desktopAppAllowlist ?? [];
+  const restricted = allowlist.length > 0;
   const focusIds = new Set<number>();
   for (const action of actions) if (action.type === 'focus') focusIds.add(action.window);
-  if (focusIds.size === 0 && captureWindow === undefined) return null;
+
+  // launch_app：参数即目标，任何模式下都过闸（与 Windows 侧一致）。
+  for (const action of actions) {
+    if (action.type !== 'launch_app') continue;
+    const check = checkDesktopTarget('launch', action.app, allowlist, action.app);
+    if (!check.allowed) return check.refusal;
+  }
+
+  const hasInput = actions.some((action) =>
+    action.type === 'click' || action.type === 'click_ref' || action.type === 'double_click' ||
+    action.type === 'set_value' || action.type === 'ui_action' || action.type === 'paste' ||
+    action.type === 'move' || action.type === 'scroll' || action.type === 'drag' ||
+    action.type === 'type' || action.type === 'keypress'
+  );
+  if (focusIds.size === 0 && captureWindow === undefined) {
+    if (!restricted || !hasInput) return null;
+    // 受限模式：无显式 focus 的输入批次以前台窗口为准；确认不了目标就拒绝。
+    const front = await activeWindow().then((state) => state.window).catch(() => null);
+    const check = checkDesktopTarget('input', front?.process ?? null, allowlist);
+    return check.allowed ? null : check.refusal;
+  }
 
   const windows = (await listWindows().catch(() => ({ windows: [] as Array<{ id: number; process?: string }> }))).windows;
   for (const id of focusIds) {
