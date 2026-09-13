@@ -155,10 +155,14 @@ export function locateBinary(name: BinaryName, hint?: string): string | null {
 function bundledDir(): string | null {
   const packaged = process.resourcesPath ? path.join(process.resourcesPath, 'tunnel') : null;
   if (packaged && existsSync(packaged)) return packaged;
-  // Source: src/main/tunnel -> repo root is three levels up.
-  // Packaged/compiled dev output keeps the same main/tunnel nesting under dist.
-  const dev = path.resolve(__dirname, '..', '..', '..', 'resources', 'tunnel');
-  return existsSync(dev) ? dev : null;
+  // 打包环境已由上方 resourcesPath 分支处理；这里兜底开发/直跑场景：
+  // 源码运行的 __dirname 是 src/main/tunnel（向上三层到仓库根），
+  // 而 electron-vite 单文件产物的 __dirname 是 out/main（向上两层到仓库根），逐个探测。
+  for (const up of [3, 2]) {
+    const dev = path.resolve(__dirname, ...Array.from({ length: up }, () => '..'), 'resources', 'tunnel');
+    if (existsSync(dev)) return dev;
+  }
+  return null;
 }
 
 /** The bundled tunnel-client version, for the diagnostics panel. */
