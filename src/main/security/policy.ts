@@ -36,6 +36,8 @@ export interface PolicyCheckContext {
 export interface PolicyVerdict {
   allowed: boolean;
   refusal: string | null;
+  /** 需要本地人工确认的 critical 动作（kernel.dispatch 异步解决后才放行）。 */
+  pendingApproval?: import('./approval.js').CriticalApprovalRequest;
 }
 
 // 工具安全元数据统一在 ./tool-descriptors.ts（Core 与 Plugin 同一套）：
@@ -176,6 +178,24 @@ export function checkToolPolicy(context: PolicyCheckContext): PolicyVerdict {
         audit(context, 'shell.execute', texts[0] ?? null, worst.level, 'denied-shell-level', worst.rule);
         return { allowed: false, refusal };
       }
+      // Critical 人工确认（P1）：七类动作即使在 shell level 3 也必须由本机用户
+      // 批准 —— credential access、privilege escalation、destructive system
+      // operation、persistence、obfuscated command、download-and-execute、
+      // security software modification。模型不能自己授权。
+      if (CRITICAL_APPROVAL_CATEGORIES.has(worst.category)) {
+        return {
+          allowed: true,
+          refusal: null,
+          pendingApproval: {
+            tool: context.tool,
+            category: worst.category,
+            rule: worst.rule,
+            target: texts[0] ?? null,
+            session: context.sessionId,
+            agent: context.agent
+          }
+        };
+      }
       if (worst.level === 'high' || worst.level === 'critical') {
         audit(context, 'shell.execute', texts[0] ?? null, worst.level, 'allowed-escalated', worst.rule);
       }
@@ -184,6 +204,17 @@ export function checkToolPolicy(context: PolicyCheckContext): PolicyVerdict {
 
   return { allowed: true, refusal: null };
 }
+
+/** 触发本地人工确认的 shell 类别（docs/THREAT-MODEL.md 二阶段 P1）。 */
+const CRITICAL_APPROVAL_CATEGORIES: ReadonlySet<string> = new Set([
+  'credential-access',
+  'privilege-escalation',
+  'destructive',
+  'persistence',
+  'obfuscated',
+  'pipe-execute',
+  'security-software'
+]);
 
 function severity(level: string): number {
   switch (level) {

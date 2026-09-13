@@ -89,6 +89,7 @@ import { acknowledgeBackgroundExecOutput, backgroundExecRecoveryNotices, offerBa
 import { DEFAULT_MAX_OUTPUT_TOKENS } from '../codex/unified-exec-constants.js';
 import { unattributedRepairEta } from '../bridge.js';
 import { checkToolPolicy } from '../security/policy.js';
+import { resolveCriticalApproval } from '../security/approval.js';
 import { conversationAttachment, readOverflowText } from '../session/store.js';
 import type { StoredText, ToolOutcome } from '../../shared/session.js';
 
@@ -686,7 +687,7 @@ async function dispatchTracked(
   markTiming('identity');
   // 安全策略总闸（docs/THREAT-MODEL.md）：shell 分级、工作区信任、worker 降级、
   // loop 预算。在实际执行代码层拒绝，与提示词无关；拒绝文案面向模型给出可执行的下一步。
-  const policy = checkToolPolicy({
+  let policy = checkToolPolicy({
     tool: name,
     args,
     conversationId: context.caller.conversationId,
@@ -694,6 +695,21 @@ async function dispatchTracked(
     agent: context.agent,
     surface
   });
+  // Critical 动作的本地人工确认（P1）：七类 critical shell 命令即使 level 3 也必须
+  // 由本机用户在 Electron 对话框批准；拒绝/超时按 fail-closed 处理。模型不能自授权。
+  if (policy.allowed && policy.pendingApproval) {
+    const decision = await resolveCriticalApproval(policy.pendingApproval);
+    if (decision === 'deny') {
+      policy = {
+        allowed: false,
+        refusal:
+          'CRITICAL_ACTION_DENIED: this command is in a category that always requires local human approval ' +
+          '(credential access, privilege escalation, destructive system operation, persistence, obfuscated command, ' +
+          'download-and-execute, or security software modification), and the user declined it. Do not retry; propose ' +
+          'an alternative the user can run manually.'
+      };
+    }
+  }
   const invokeHandler = (): Promise<ToolResult> => {
     handlerRan = true;
     return run();

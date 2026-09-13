@@ -48,6 +48,7 @@ import { effectiveCapabilities, getConfig, updateConfig, MAX_MCP_INSTRUCTIONS_CH
 import { clearAllGoalSwitches, draftTaskPlan, listGoalModels, MODEL_PAGE_SIZE, retireGoalDrafts, goalBackendFor, goalSwitchFor, setGoalSwitchNow, setGoalReplyActiveNow, setGoalObjectiveNow } from './goal.js';
 import { forgetExposedSurface } from './mcp/server.js';
 import { runDiagnostics } from './diagnostics.js';
+import { initApprovalPrompt } from './security/approval.js';
 import { formatLogAsJson, formatLogForClipboard, getLog, logInfo, logWarn, onLog } from './logger.js';
 import { RESERVED_ROOT_NAMES, uniqueRootName, validateNewRoot, SandboxError, resolvePath } from './sandbox.js';
 import { addProject, listProjects, removeProject } from './projects.js';
@@ -401,6 +402,8 @@ export function registerIpc(getWindow: () => BrowserWindow | null, quitToInstall
     const id = window?.webContents?.id;
     return typeof id === 'number' && !window!.webContents.isDestroyed() ? id : null;
   };
+  // Critical 确认对话框需要主窗口（无窗口时 fail-closed 拒绝）。
+  initApprovalPrompt(getWindow);
   registerPluginIpc(handle, getWindow);
   handle('usage:get', () => usageOverview());
   handle('state:get', async () => {
