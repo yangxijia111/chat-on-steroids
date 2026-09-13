@@ -1,0 +1,39 @@
+# CodeQL 静态分析（二阶段 P2 security gate）。
+#
+# JavaScript/TypeScript 全仓库扫描，外加 secret 检测查询集；push 到 main 与 PR
+# 都会运行。权限最小化：只读 security-events 写入。
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # 每周一 UTC 03:20 的例行扫描，覆盖无提交周的安全规则更新。
+    - cron: '20 3 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+concurrency:
+  group: codeql-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Analyze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - uses: github/codeql-action/init@f2f72e3102ffc16b7e869075f9c8e55e512f074e # v4
+        with:
+          languages: javascript-typescript
+          queries: security-extended
+
+      - uses: github/codeql-action/analyze@f2f72e3102ffc16b7e869075f9c8e55e512f074e # v4
+        with:
+          category: '/language:javascript-typescript'

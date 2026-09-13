@@ -1,0 +1,27 @@
+# Dependency Review（二阶段 P2 security gate）。
+#
+# GitHub 原生对比 PR 新引入依赖的已知漏洞与许可，只在 pull_request 上有意义。
+# 审计等级 high 起判定失败，与 CI 里的 npm audit 门禁保持同一标准。
+name: Dependency Review
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: depreview-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    name: Review new dependencies
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - uses: actions/dependency-review-action@40c09d8dc3bb4f0bf2c075a7175b097928d8a1f8 # v4
+        with:
+          fail-on-severity: high

@@ -14,6 +14,26 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # 二阶段 P2：生产依赖审计门禁 —— 只看 --omit=dev（打包进应用的依赖），
+  # high 及以上直接失败。dev-only 通告留给维护者的依赖周期处理。
+  security-audit:
+    name: Security audit (production dependencies)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Audit production dependencies (fail on high or above)
+        run: npm audit --omit=dev --audit-level=high
+
   verify:
     name: Verify ${{ matrix.name }}
     strategy:
