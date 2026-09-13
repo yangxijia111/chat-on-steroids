@@ -34,7 +34,7 @@ vi.mock('electron', () => ({
 
 const { defaultConfig, initConfigPath, saveConfig } = await import('../src/main/config.js');
 const { initSecretsPath, setSecret } = await import('../src/main/secrets.js');
-const { bridgePort, pendingCommands, resetBridgeForTests, resumeJobFor, setBrowserOpener, startBridge, stopBridge } =
+const { beginPairing, bridgePort, pendingCommands, resetBridgeForTests, resumeJobFor, setBrowserOpener, startBridge, stopBridge } =
   await import('../src/main/bridge.js');
 const durable = await import('../src/main/durable.js');
 const { flushDurable, initDurableStore, readDurable, writeDurableSoon } = durable;
@@ -105,7 +105,9 @@ function request(
 }
 
 async function connect(): Promise<void> {
-  const reply = await request('POST', '/pair', { auth: null });
+  // 二阶段 P2：配对需要桌面端签发的一次性 code。
+  const { code } = beginPairing();
+  const reply = await request('POST', '/pair', { auth: null, body: { code } });
   token = reply.body.token as string;
 }
 
