@@ -331,6 +331,18 @@ New/extended suites (all green alongside the existing 1,100+ tests):
 - `ipc.test.ts` — nested frame, rogue main-frame URL, missing senderFrame all refused;
   trusted renderer path intact.
 
+Run results (2026-09-13 re-verification, Windows, suite split into two halves to
+avoid the machine's parallel-run resource contention): all suites green except
+four environment-inherent failures that reproduce identically on the unmodified
+pre-hardening base commit `86d7014` — `mcp.test.ts` ×2 (CI discovery-size budget
+plus one batch-parser note) and `windows-keys.test.ts` ×1 (PowerShell script
+parsing on this locale) and `search.test.ts` ×1 (ripggrep file-count accounting
+on this machine). `npm run typecheck` passes. Two follow-up fixes from this
+re-verification: `input-delivery-integration.test.ts` now pairs through the
+desktop-started one-time code and the IPC frame gate (protocol-14 change had
+missed its bridge/IPC stubs), and the bilingual README regained the Linux
+`--no-sandbox` fallback note the packaging suite asserts.
+
 ## 12. Remaining risks after Phase 2 (honest list)
 
 Phase 1 residuals (§7) mostly stand; updated status first, then the new ones.
