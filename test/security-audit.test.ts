@@ -139,14 +139,14 @@ describe('audit configuration wiring', () => {
       target: 'switched-off-probe', risk: 'low', decision: 'allowed-low-risk', reason: null
     });
     expect(auditPendingForTests()).toHaveLength(0);
-    // 重新开启 → 立即恢复记录。
+    // 重新开启 → 立即恢复记录（从落盘文件断言，flush 是异步的）。
     await saveConfig({ ...base, security: { ...base.security, auditLog: true } });
     recordSecurityAudit({
       session: null, agent: null, tool: 'exec_command', action: 'shell.execute',
       target: 'switched-on-probe', risk: 'low', decision: 'allowed-low-risk', reason: null
     });
-    const pending = auditPendingForTests().map((line) => JSON.parse(line) as Record<string, unknown>);
-    expect(pending.some((row) => row['target'] === 'switched-on-probe')).toBe(true);
-    expect(pending.some((row) => row['target'] === 'switched-off-probe')).toBe(false);
+    const entries = await flushAndGet();
+    expect(entries.some((row) => row['target'] === 'switched-on-probe')).toBe(true);
+    expect(entries.some((row) => row['target'] === 'switched-off-probe')).toBe(false);
   });
 });
